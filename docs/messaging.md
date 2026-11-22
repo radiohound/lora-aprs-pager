@@ -96,8 +96,8 @@ the map, arrows pan, press recentres. Debounce/direction need testing on the rea
 - **Location in a message:** the pager detects a lat/lon or Maidenhead grid square in any received message (from any client) and
   shows a pin mark beside it in the thread. Knob highlights the message, press opens its detail, the first menu entry is
   "Show on map" (only when a location was found; the knob picks between several). The map opens on that spot with a temporary pin,
-  long press returns to the thread. A keyboard key could be an optional shortcut. (APRS object reports may be the standard way to
-  SEND a map pin; that chapter has not been read yet.)
+  long press returns to the thread. A keyboard key could be an optional shortcut. (To SEND a map pin use an APRS object, see
+  "Meeting spot as an APRS object" below; parsing text is the fallback for pins other clients sent as plain text.)
 - **Stations on the map:** press switches the knob from Zoom to Station-hop: each turn jumps to the next station, nearest first,
   with a ring and label; press opens the station card (Message, Info); long press goes back to Zoom. A filter ("heard in the last
   hour") keeps the hop list short.
@@ -161,6 +161,22 @@ message 12 quoted from its own store. Saves roughly 20-60 bytes per quote; at SF
 - **Extension:** the same idea could make one-tap replies ("OK", "QSL") a one-byte code between our own units.
 - **Order of work:** after plain messages and reply-ack work; combines well with reply-ack. Document the convention publicly
   before relying on it, and never describe it as part of APRS.
+
+## Meeting spot as an APRS object (Walter 2026-11-22; chapter 11 of the 1.2 draft c read directly)
+Spec facts: an object report is `;` + 9-character name + `*` (live) or `_` (killed) + timestamp (always) + position (full lat/long;
+compressed is not recommended on RF) + symbol + comment of up to 43 characters (36 with an extension). Item reports (`)`, 3-9
+character name, no timestamp) are not recommended on RF, so use objects. Any station may take over an object by sending a new
+report with the same name (the original station stops when it hears that); killing it is the same report with `_`, and receivers
+should stop displaying it but keep the data. Displays should show the callsign of the station that sent the object. Area objects
+(circle, ellipse, box, triangle, line; 60 feet to 100 miles; colour) are possible with the `\l` symbol and a `Tyy/Cxx` extension.
+Flow: map action "Mark meeting spot" (here, or at a knob-moved cursor) -> name (default `MEET-<callsign>`) + short comment (time)
+-> send the object; receivers see a marker with name, comment, setter, distance and bearing. For one specific person also send an
+acked message pointing at the object (object = everyone's map, acked message = that person is told). Kill it when done. Optionally
+an area object for "meet within this circle". Our hop list includes objects.
+Cautions: it is public (RF, and APRS-IS if an iGate forwards it): warn before sending; no authentication, anyone can overwrite it,
+so names include the callsign; airtime is roughly 40-50 bytes before the AX.25 header, so about 1.5 s at SF12 (estimate); how often
+to repeat an object is not in chapter 11, read the rest of the spec before choosing; display in other clients (aprs.fi, apps) is
+not verified. Symbol choice for a meeting spot: check the symbol table (APRS-Symbols.pdf in the wb2osz/aprsspec repo).
 
 ## Notifications
 Haptic (DRV2605), status-bar badge, backlight flash, optional sound via the audio codec later; per-contact mute and quiet hours.
