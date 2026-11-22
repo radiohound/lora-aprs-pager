@@ -185,9 +185,14 @@ rendering is display-only, with a "show raw text" toggle. UTF-8 emoji are not se
 draft, but costs up to 4 bytes each, it is unknown whether 67 counts characters or bytes, and many clients cannot show them).
 - **Input:** type the ASCII, or pick from an emoticon palette with the knob (the pick inserts the ASCII); the one-tap replies can
   use the same list. The compose box shows the icon live.
-- **Matching rules:** only a fixed list, and only when surrounded by spaces or line ends, so `10:30`, `http://`, `(c)` or `re:)`
-  are not turned into faces. Initial list to settle: `:)` `:-)` `:(` `:-(` `;)` `:D` `:P` `:O` `:|` `:/` `<3` `XD` `B)` `:'(`
-  `8)` and a thumbs-up like `(y)` (mark each as proposal).
+- **Default list (source of truth: `src/emoticons.h`, 33 entries, host-tested by `test/host/test_emoticons.cpp`):**
+  smile `:)` `:-)`; sad `:(` `:-(`; wink `;)` `;-)`; grin `:D` `:-D`; laughing `XD`; tongue `:P` `:-P`; surprised `:O` `:-O`;
+  neutral `:|` `:-|`; unsure `:/` `:-/`; crying `:'(` and `T_T`; kiss `:*`; heart `<3`; broken heart `</3`; thumbs up `(y)`;
+  thumbs down `(n)`; wave `o/`; cheer `\o/`; cool `B)` `8-)`; angel `O:)`; angry `>:(`; unimpressed `-_-`; happy `^_^`; cute `:3`.
+  All available in the knob palette; users can add their own later.
+- **Matching rule (implemented and tested):** the longest list entry at a position, preceded by the start of the text or
+  whitespace, followed by the end, whitespace or one of `. , ! ?`. So `10:30`, `http://x`, `(c)`, `re:)`, `3:1` and `:))` are NOT
+  turned into faces. Icon bitmaps are not drawn yet (the list order is the future icon index).
 - **Icons:** our own small bitmaps (about 16x16 or 20x20 RGB565 in flash, drawn inline at text height). Do not copy a vendor's
   emoji set; if an open emoji set is wanted, check its licence first (not looked up).
 - **Incoming UTF-8 emoji from other clients:** show a placeholder box at first; optionally map a few very common ones to our icons
