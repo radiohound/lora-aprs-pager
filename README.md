@@ -24,6 +24,9 @@ before them; one SPI bus shared by display, SD, LoRa, NFC.
 5. Heard stations on the map.
 6. Screens, messages, settings, power saving.
 
+## Controls
+The rotary encoder is a primary control everywhere (scroll lists/threads, zoom the map, press = select, long press = menu); the keyboard types and gives shortcuts. See `docs/messaging.md`.
+
 ## Map design rules (decided 2026-11-22)
 - Raster first, vector later. Raster: read the standard `<z>/<x>/<y>.jpg|png` tile layout (256 px, FAT32), the same
   layout a T-Deck LoRa APRS card uses, so one SD card works in both. No code or assets from the T-Deck firmware.

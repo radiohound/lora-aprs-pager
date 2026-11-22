@@ -13,6 +13,12 @@ confirmed touch screen, so everything is keys + encoder.
 - Reply-ack (`{MM}AA`, APRS 1.2 addendum): optional, to be verified before use.
 - There is no real group chat in APRS: groups are bulletin conventions or `CQ`/`ALL` addressing.
 
+## Controls: use the rotary encoder (Walter, 2026-11-22: remember the scroll knob)
+The pager's rotary encoder (A=GPIO40, B=41, press=7; Meshtastic enables internal pull-ups for it) is the main way to move:
+turn = scroll lists, threads and canned replies (hold a key or modifier for page-sized jumps); press = open/select (Enter);
+long press = context menu (reply, delete, detail). Keyboard is for typing and shortcuts. Same idea elsewhere: knob zooms
+the map, arrows pan, press recentres. Debounce/direction need testing on the real knob.
+
 ## Screens (keys are proposals)
 1. **Conversations**: one row per callsign (exact SSID; option to merge SSIDs), last-message preview, time, unread badge,
    distance and bearing when the station has been heard. Enter = open, N = new message, Del = delete conversation (confirm),
