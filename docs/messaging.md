@@ -104,6 +104,12 @@ the map, arrows pan, press recentres. Debounce/direction need testing on the rea
 - **Pan by knob alone:** the knob cycles functions: Zoom, then Pan east-west, with a press swapping to north-south. Keyboard arrows
   could also pan if the pager has them (not confirmed). Alternative to try: long press enters hop mode and a short press toggles
   zoom/pan.
+- **Unread dot, but never "click the marker" (Walter 2026-11-22: visually yes, but hard to click):** a station with an unread
+  message gets a coloured dot or ring on its map marker, as something to LOOK at only. Acting on it does not need aiming:
+  a status-bar badge shows the unread count and a knob press on it opens the conversation list; a thread has a "Locate" action
+  that centres the map on that station; station-hop orders stations unread first, then nearest first, and a long press or key
+  can jump to the next unread station. Hopping also handles overlapping markers in crowded areas. Summary: the map shows who
+  wrote and where; the lists and the knob do the acting. Try alternatives on the real device if one-press mode cycling annoys.
 - Touch is assumed absent; the GT911 touch controller was mentioned only in an unconfirmed search snippet.
 
 ## Screens (keys are proposals)
