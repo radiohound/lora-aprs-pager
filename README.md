@@ -44,6 +44,21 @@ Decode is about half the time, so a decoded-tile cache in PSRAM (128 KB per tile
 with `qio_opi` it works. The pager's PSRAM type is unverified (an agent said QSPI): run `-e bench` and if it prints
 `PSRAM found=0` try `qio_opi`. Pager numbers still to be measured (display push should be faster at 75 MHz).
 
+## Vector tile workload (measured on the Mac, 2026-11-22, `tools/count_vec.py`)
+Pipeline archives california_r2_vector.pmtiles + _vector_osm.pmtiles (MVT, gzip, z6-14), tiles summed. Land cover is a raster
+PNG archive, so forest/landcover shading is NOT in the vector data; polygons are rare (water only).
+| area, zoom | gz KB | features | vertices |
+| SF downtown z12 / z14 | 36 / 33 | 3,791 / 2,517 | 8.5k / 5.3k |
+| San Jose downtown z12 / z14 | 49 / 25 | 4,972 / 1,769 | 12.0k / 4.3k |
+| Sunnyvale suburb z14 | 11 | 638 | 2.1k |
+| Mt Hamilton (open) z12 / z14 | 7 / 5 | 175 / 57 | 3.0k / 1.6k |
+| Yosemite Valley z12 / z14 | 17 / 12 | 542 / 415 | 6.4k / 2.7k |
+| High Sierra z12 / z14 | 8.5 / 2.8 | 239 / 45 | 3.3k / 0.8k |
+z10 tiles are unfiltered and huge (San Jose 181 KB gz, 22k features, 51k vertices): a device renderer must filter by road
+class per zoom. Vector is smaller than the 15-17 KB JPEGs only in open country; dense towns are 25-50 KB. Lines dominate
+(roads, trails, streams, contours). Break-even vs the uncached raster frame (~450 ms): a 6-tile dense view is ~15k features /
+~30k vertices, so vector must draw about 33 features/ms to match. Drawing speed on the ESP32-S3 is NOT measured yet.
+
 ## Before the first flash
 Take a full flash backup so the factory firmware can be restored:
 
