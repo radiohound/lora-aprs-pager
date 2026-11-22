@@ -6,10 +6,12 @@ long-press delete of one/selected messages or a whole conversation, message deta
 confirmed touch screen, so everything is keys + encoder.
 
 ## APRS facts to build on
-Verified 2026-11-22 by an agent from APRS101 chapter 14 (read via the op-co.de mirror; aprs.org itself returned 403, so the
-PDF was not read directly), aprs.org/txt/messages101.txt, aprs.org/aprs11/replyacks.txt and aprs-is.net/IGating.aspx.
+Verified 2026-11-22: chapter 14 of the APRS 1.2 draft c (wb2osz/aprsspec APRS12c.pdf, Nov 2024, an UNOFFICIAL compilation of
+APRS101 plus the later updates; the "official" spec is APRS101 + errata) was read directly; the agent also read APRS101 ch.14
+via a mirror, aprs.org/txt/messages101.txt, aprs.org/aprs11/replyacks.txt and aprs-is.net/IGating.aspx.
 - Message packet: `:ADDRESSEE:text{msgno`. Addressee is a fixed 9-character field, space padded. Text is up to 67 characters,
-  printable ASCII except `|`, `~` and `{`. The message number is optional: `{` plus up to 5 alphanumerics, no spaces.
+  printable ASCII or UTF-8 except `{` (older text also excluded `|` and `~`: do not SEND those). In practice longer text than 67
+  is seen, and the spec says receivers must handle it: always display the whole text, limit only what we send to 67. The message number is optional: `{` plus up to 5 alphanumerics, no spaces.
 - A message without a number must NOT be acked. Ack is `ackNNN`, reject `rejNNN`, sent as message text.
 - The sender repeats until acked, cancelled or timed out. The receiver acks EVERY copy of a repeated message (acks at least
   30 s apart, because digipeaters suppress duplicates for 30 s) but should show it only once.
@@ -17,10 +19,21 @@ PDF was not read directly), aprs.org/txt/messages101.txt, aprs.org/aprs11/replya
 - Bulletins: `BLN` + digit + 5 spaces (general), `BLN` + digit + group name padded to 5 (group, e.g. `BLN4WX`), `BLN` + capital
   letter (announcement). Repeated by the sender a few times an hour for a few hours (announcements far less often); a new line
   with the same ID from the same station overwrites the old one; alert on new or changed lines. NWS uses `NWS-xxxxx`.
-- Reply-Ack (optional, partly supported, extent unverified): `{MM}AA` = my number MM plus a piggybacked ack for your message AA;
-  the receiver still sends `ackMM}AA`, and strips `}AA` before duplicate detection. A client must tolerate `}` in numbers/acks.
-- Not verified: the APRS 1.2 draft c message changes (unofficial, wb2osz/aprsspec, Nov 2024); no 2025-26 spec revision found.
-  Multi-line, Unicode or longer messages: nothing found, 67 characters stands.
+- Reply-Ack (Dec 1999, in the 1.2 draft; optional and backward compatible; how widely implemented is unverified): send every
+  message number as `{MM}AA` (AA = the free ack for the latest message received from that station, empty if none; a trailing `}`
+  alone says "I can take reply-acks"). AA is attached only at the instant of transmission, so it can change between retries.
+  On receive: if AA matches one of my outgoing MM, that message is acked; strip `}AA` before storing and duplicate checking;
+  still send the normal `ackMM}AA` (an exact copy); remember the incoming MM as my AA for my next message to that station.
+  A plain `ackMM` must also still match `{MM}` in the outgoing queue. Saves one packet per exchange, valuable on LoRa.
+- Message groups (client-side): a user-defined list of callsigns whose messages a station also reads, plus it always reads
+  `ALL`, `QST`, `CQ`; acks only messages addressed to itself. Bulletin groups: a user-defined list of group names; if the list is
+  empty all bulletins are shown and alert, otherwise only those groups plus general bulletins.
+- Bulletin Screen recommendations (spec): sort by originating callsign then ID, re-sort as lines arrive; a new line with the
+  same ID from the same station replaces the old; user can clear any/all (they reappear if still valid); alert on any new or
+  replaced line and re-alert periodically until the user acknowledges; log old bulletins.
+- NTS radiograms (optional): messages whose text begins `N#\`, `NA\`, `N1\`..`N6\`, `NS\`, `NR\`; each line max 67 characters.
+  Not planned; they display as ordinary messages.
+- No 2025-26 official spec revision found; multi-line and longer-than-67 sending are not specified.
 - No real group chat in APRS: groups are bulletin conventions or `CQ`/`ALL` addressing.
 
 ## Reaching the pager from the internet (verified rules, inferred consequence)
@@ -54,7 +67,9 @@ the map, arrows pan, press recentres. Debounce/direction need testing on the rea
    characters; canned replies (editable: "QSL", "On my way", "Where are you?"); insert my position/time; estimated airtime shown.
 4. **Reply in one keystroke** from the new-message notification: opens Compose already addressed to the sender, in that thread.
 5. **From the map**: select a station, then Message / Info (symbol, last position, comment, path, age, distance, bearing).
-6. **Bulletins**: tab for BLN/group bulletins heard, subscribe to group names, send a bulletin with a repeat schedule.
+6. **Bulletins** (spec "Bulletin Screen"): tab of BLN/group bulletins and announcements, sorted by sender then ID, a new line
+   with the same ID replaces the old, clear one/all, a repeating alert until acknowledged, a log of old ones, a group-name
+   filter list (empty = all), and sending a bulletin with a repeat schedule (a few times an hour for a few hours).
 7. **Commands**: the Digi Remote function (choose a command, Send) as a screen of its own, replies land in the thread.
 
 ## Delete
