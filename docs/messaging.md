@@ -213,6 +213,9 @@ Haptic (DRV2605), status-bar badge, backlight flash, optional sound via the audi
 - Prior art: CA2RXU's tracker stores more than 500 received messages, has a TX buffer with retries and an ack request option,
   and uses a CardKB or a phone for input; its retry count/timing is undocumented. Users have reported lost acks (a missing byte
   in one fork's packet) and one client sending duplicates while showing "failed": test ack/duplicate handling carefully.
+- **RULE (Walter 2026-11-22): NO ENCRYPTION, ever.** Nothing this firmware sends on RF is encrypted or obscured: no encrypted
+  message content, no obfuscated compact formats meant to hide meaning, no Polaric-style encrypted messages. Everything on air stays
+  plain and readable (the compact quote and emoticons are plain text conventions, documented publicly).
 - Legal: US rules (47 CFR 97.113(a)(4), from the agent's background knowledge, not verified here) forbid messages encoded to
   obscure their meaning, so never encrypt message content on RF. Authentication-only codes (like the Digi Remote's keyed
   codes) are commonly considered a different thing, but Walter should confirm his own reading. Polaric's `#MAC{id` authenticated
