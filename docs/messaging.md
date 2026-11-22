@@ -92,6 +92,20 @@ turn = scroll lists, threads and canned replies (hold a key or modifier for page
 long press = context menu (reply, delete, detail). Keyboard is for typing and shortcuts. Same idea elsewhere: knob zooms
 the map, arrows pan, press recentres. Debounce/direction need testing on the real knob.
 
+## Map and location controls without touch (proposal, 2026-11-22; test the feel on the real knob)
+- **Location in a message:** the pager detects a lat/lon or Maidenhead grid square in any received message (from any client) and
+  shows a pin mark beside it in the thread. Knob highlights the message, press opens its detail, the first menu entry is
+  "Show on map" (only when a location was found; the knob picks between several). The map opens on that spot with a temporary pin,
+  long press returns to the thread. A keyboard key could be an optional shortcut. (APRS object reports may be the standard way to
+  SEND a map pin; that chapter has not been read yet.)
+- **Stations on the map:** press switches the knob from Zoom to Station-hop: each turn jumps to the next station, nearest first,
+  with a ring and label; press opens the station card (Message, Info); long press goes back to Zoom. A filter ("heard in the last
+  hour") keeps the hop list short.
+- **Pan by knob alone:** the knob cycles functions: Zoom, then Pan east-west, with a press swapping to north-south. Keyboard arrows
+  could also pan if the pager has them (not confirmed). Alternative to try: long press enters hop mode and a short press toggles
+  zoom/pan.
+- Touch is assumed absent; the GT911 touch controller was mentioned only in an unconfirmed search snippet.
+
 ## Screens (keys are proposals)
 1. **Conversations**: one row per callsign (exact SSID; option to merge SSIDs), last-message preview, time, unread badge,
    distance and bearing when the station has been heard. Enter = open, N = new message, Del = delete conversation (confirm),
