@@ -19,6 +19,7 @@ before them; one SPI bus shared by display, SD, LoRa, NFC.
 1. **Bring-up (this commit):** expander, I2C scan, display test, battery, SD, GPS NMEA, radio probe and RX-only listen. NOT YET RUN ON HARDWARE.
 2. Radio: decode received LoRa APRS packets.
 3. Tracker: GPS beacons (needs licence/callsign settings; nothing transmits before this).
+3b. Messaging (see `docs/messaging.md`): receive and show, then send with ack/retry, conversations, reply, delete.
 4. Map: raster tiles from SD (`<z>/<x>/<y>.jpg|png`), own position.
 5. Heard stations on the map.
 6. Screens, messages, settings, power saving.
