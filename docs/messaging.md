@@ -46,6 +46,37 @@ EMAIL-2 (email gateway; the old server retired 2019, javAPRSSrvr replaced it; wa
 the address; 2026 operation not confirmed). SMSGTE (conflicting reports, status unknown). Winlink via APRSlink (not read).
 CA2RXU's tracker has an "APRSThursday" menu entry. WHO-IS/INFO/position responders: not verified.
 
+## What existing clients do (survey 2026-11-22; web access was thin, so "not verified" matters)
+Verified from sources: **APRSdroid** (changelog only) has a conversation view per callsign, resend and abort in the long-press
+menu, "Clear messages" per callsign, and its history shows real bugs: duplicate notifications on retransmits (fixed 1.1.1), duplicate
+message IDs (1.2.1), SSID filtering and ACK parsing (1.2.0, 1.2.3). **Kenwood TM-D710A** stores 100 messages newest first, shows
+unread / addressed-to-me / bulletin symbols, Reply and New, CLR deletes (or cancels an outgoing one), an outgoing message shows
+its remaining transmissions (5 sends, then marked failed), RE-TX resets the count. **TH-D74** adds Edit (quotes the original),
+canned phrases while composing, and auto-reply with delay (details not verified). **Yaesu FT-5DR** holds 60 messages, separate
+unread/read icons, shows remaining transmissions, TX CLR cancels, ack received vs not received are distinguished; FT2DR has 8
+preset messages. **CA2RXU tracker**: read/write/delete via CardKB or phone, 500+ messages, TX buffer with retries and ack
+request, LED + buzzer + OLED unread count; no reply feature mentioned. **aprs.fi** cannot send (view only); its iOS app skipped
+acks for messages older than 2 h and only woke to ack after the user opened a push, so senders retried endlessly; it acks only
+the exact SSID. Not verified: Xastir (auto-reply exists, Send is greyed until acked, via snippet), YAAC (IM-style chat sessions,
+one open ticket), APRSIS32 (per-message ack/path settings, via snippet), UI-View32 (nothing found), bulletin and group handling in
+any client except the D710 "B" marker, retry intervals of most clients.
+Pain points: duplicate notifications, duplicate IDs, SSID mismatch breaking acks, late/missing acks causing endless retries,
+fixed retry counts that waste airtime, tiny flat stores (60-100) without per-callsign delete.
+Gaps we can fill (no verified client has them all): per-conversation threads on a handheld, adaptive backoff with a visible
+countdown, reply-ack, no notification or re-display for duplicates, SSID-tolerant addressing with a recent-contacts picker,
+a knob-driven quick-reply list, per-callsign and delete-all.
+
+Design decisions taken from this:
+1. Notify once per message; a retransmitted copy is acked (spec) but never notifies or re-displays.
+2. Show the exact SSID in conversations and warn when a message is addressed to a different SSID of ours (spec: only the
+   addressee acks); the To picker offers recent contacts and heard stations, SSID shown.
+3. Resend and Abort in the context menu of any outgoing message; delivery state always visible (queued, try n of N with
+   countdown to the next, acked, rejected, failed).
+4. Quote-edit: Reply can start with the original quoted; canned phrases editable and on the knob list.
+5. Optional auto-reply ("away") with a delay that cancels if the user operates the device first, off by default.
+6. Send messages to the same addressee one at a time, each after the previous is acked (aprs.org guidance).
+7. Large store on the SD card (thousands, not 60-100), unread count on the home screen, status-bar unread indicator.
+
 ## Controls: use the rotary encoder (Walter, 2026-11-22: remember the scroll knob; "knob for messaging and menus")
 Rule: EVERY screen and menu must be fully usable with the knob alone (turn = move, press = select, long press = back/context
 menu); the keyboard is for typing text and optional shortcuts, never required to navigate. That covers the main menu, settings,
@@ -79,8 +110,9 @@ the map, arrows pan, press recentres. Debounce/direction need testing on the rea
 
 ## Send engine
 - Per-destination message numbers; retry with backoff. The classic AFSK schedule (WB4APR: start at 8 s, decaying) is too
-  aggressive for SF9-SF12 LoRa (my inference; no published LoRa guidance found): start around 30 s, then 60 s, 120 s, capped,
-  configurable; honour the 30 s duplicate window; an ack cancels retries; a rej stops them; a key stops retrying manually.
+  aggressive for SF9-SF12 LoRa (my inference; no published LoRa guidance found): start around 30 s and double up to a cap
+  (aprs.org message-issues.txt suggests 0, 15 s, 30 s, 1, 2, 4, 8, 16 min, then stop: take that shape but begin at 30 s; the
+  agent reading it did not give the page date), configurable, with the countdown to the next try shown; honour the 30 s duplicate window; an ack cancels retries; a rej stops them; a key stops retrying manually.
 - Receive: ack every copy of a numbered message (30 s apart), show it once; never ack unnumbered, group or bulletin messages.
 - Queue persists across reboots. Path per message (default WIDE1-1, option direct).
 - Be polite on air: listen before talk where the radio supports it, rate limit, never ack bulletins.
