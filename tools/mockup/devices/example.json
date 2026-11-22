@@ -1,0 +1,8 @@
+{
+  "_comment": "Copy this per device. 'image' is a photo/illustration of the device, straight-on, path relative to this file. 'corners' = screen corners in that image's pixels, clockwise from top-left: TLx,TLy,TRx,TRy,BRx,BRy,BLx,BLy. Find them with: mockup.py IMAGE --grid grid.png, then check with --outline.",
+  "image": "example_device.png",
+  "corners": [260, 270, 1010, 255, 1015, 560, 265, 575],
+  "glass": 0.35,
+  "inset": 0,
+  "scale": 1.0
+}
