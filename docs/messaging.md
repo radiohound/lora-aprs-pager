@@ -139,6 +139,23 @@ the map, arrows pan, press recentres. Debounce/direction need testing on the rea
   so an ack round trip is about 5 s plus waiting; this is why retries must be patient.
   Compressing messages (the LACF work) is a possible later step, but that format is still a draft in flux; nothing here depends on it.
 
+## Compact quote by reference (proposal, 2026-11-22; our own convention, NOT an APRS standard, not agreed with anyone)
+Idea (Walter): quoting should not resend the quoted bytes. Both units already store the conversation, so a reply carries only a
+short reference to an earlier message (its number and direction, "yours" or "mine"), e.g. `re:12`, and the receiving pager shows
+message 12 quoted from its own store. Saves roughly 20-60 bytes per quote; at SF12 about 1 symbol, roughly 33 ms, per payload byte
+(my estimate from the symbol count, not measured), so a 30-character quote saves about 0.8 s of airtime, plus fewer retries.
+- **Readable by others:** the token is plain text, so clients that do not understand it just show "re:12 OK on my way".
+- **Capability:** use the compact form only with stations known to understand it. Our firmware has its own registered tocall,
+  which the station table sees in each station's beacons. Otherwise send a short text fragment of the quote, or none.
+- **T-Deck:** needs extra code in Walter's fork to resolve references; not checked whether that fork stores message numbers.
+  The stock firmware just shows the token.
+- **Risks:** the target may have been deleted on the other side (show "quoted message not available", optionally with its first
+  few characters); message numbers wrap and are unique only per sender (a 1-2 character check of the quoted text would catch a
+  mismatch, costing a byte or two); the log must therefore store number and direction for every message (already planned).
+- **Extension:** the same idea could make one-tap replies ("OK", "QSL") a one-byte code between our own units.
+- **Order of work:** after plain messages and reply-ack work; combines well with reply-ack. Document the convention publicly
+  before relying on it, and never describe it as part of APRS.
+
 ## Notifications
 Haptic (DRV2605), status-bar badge, backlight flash, optional sound via the audio codec later; per-contact mute and quiet hours.
 
