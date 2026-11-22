@@ -199,6 +199,51 @@ draft, but costs up to 4 bytes each, it is unknown whether 67 counts characters 
   later (font and byte-count questions unverified).
 - **Screenshots/mockups:** the icons appear in the screenshots, so the screenshot tool shows exactly what users see.
 
+## Group text: individual acked messages that look like one group message (Walter 2026-11-22)
+Problem: APRS group addresses (`ALL`, `QST`, `CQ`, bulletin groups) are never acked, so the sender never knows who got it.
+Design: a group is a saved list of callsigns. One typed message is sent to each member as an ordinary one-to-one message with its
+own message number, one at a time; each ack comes back normally. Other clients just see a direct message from us (works with
+every client and radio). UI: the group message shows "Delivered 3 of 5"; the knob expands a per-member list (queued, sent try n
+of N, acked, failed); "Resend to those who missed it" retries only those; members not heard recently wait in the queue
+("deliver on hearing") instead of burning airtime. Replies: v1 they arrive as normal 1:1 messages in each person's thread; later,
+a reply that uses the compact `re:` reference could be filed in the group thread (needs an agreed convention and a shared member list).
+A cheaper "one broadcast + a short ack from each member" variant is NOT planned: the spec says stations never ack group-addressed
+messages, so it would go against the spec and other clients could not read such acks; only ever consider it as a clearly documented
+extension between our own units. Soft cap on group size (about 8) with a warning, and show the estimated airtime before sending.
+
+## Airtime by spreading factor, and settings profiles (my calculation, standard LoRa formula, NOT measured)
+Assumptions: 125 kHz, coding rate 4/5, preamble 8, CRC on, low-data-rate optimisation at SF11/12, LoRa APRS 3-byte header, a
+64-byte message (`K6ATV-14>APLAB1,WIDE1-1::K6ATV-3  :On my way, gate is open{12`) and a 42-byte ack, both with a WIDE1-1 path.
+| SF | message | ack | per recipient | group of 5 | group of 8 |
+| 7 | 0.12 s | 0.09 s | 0.21 s | 1.0 s | 1.6 s |
+| 8 | 0.22 s | 0.15 s | 0.37 s | 1.8 s | 3.0 s |
+| 9 | 0.39 s | 0.29 s | 0.68 s | 3.4 s | 5.4 s |
+| 10 | 0.70 s | 0.53 s | 1.23 s | 6.2 s | 9.9 s |
+| 11 | 1.56 s | 1.15 s | 2.71 s | 13.6 s | 21.7 s |
+| 12 | 2.79 s | 2.14 s | 4.93 s | 24.7 s | 39.5 s |
+Group text is quick at SF7-SF9 and slow at SF12. Costs: roughly 2.5 dB less sensitivity per step down (about 12-14 dB from SF12 to
+SF7, from memory, not verified), so a faster group only works when members are fairly close; and stations on different spreading
+factors cannot hear each other even on the same frequency (Walter's notes: Arizona runs SF7, Las Cruces SF12, so there is no single
+standard). A receiver listens on one spreading factor, so the whole group must share one setting, and per-member speeds are not
+possible. Therefore: **named settings profiles** (frequency, spreading factor, path, maybe TX power), switched with the knob, e.g.
+"Standard APRS" (433.775, SF12) and "Local net" (SF9 or SF7); groups and nets are tied to a profile; the pager shows the estimated
+airtime before sending ("5 recipients, about 3 s at SF9") and warns when sending a group at SF12. Anything faster than the standard
+channel is a separate network that only works between people who agreed on the setting. The same profiles serve ARES nets (below).
+
+## Radiograms and ARES/RACES (later phase; Walter sees possibilities, 2026-11-22; practice questions need his input)
+Spec (1.2 draft c ch.14): an NTS radiogram travels as ordinary APRS messages, one per line, all addressed to the same station and
+numbered with the normal message ID: `N#\number\precedence\handling\originator\check\place\time\date`, `NA\` address lines,
+`NP\` phone, `N1\`..`N6\` text lines, `NS\` signature, `NR\` received-from trail. Each line max 67 characters including the 3-character
+tag; max 6 text lines (about 380 characters of body); fields `N#`, `NA`, `NS`, `NR` required. An application need not understand them.
+Possible pager features: a fill-in form driven by knob and keyboard with precedence/handling pickers, automatic word count for the
+check field, receive and reassemble into one radiogram view with a missing-line warning, forward (add our own `NR\` line and pass
+it on), export to SD or text over USB. A full radiogram is about 10 packets (roughly a minute at SF12 with acks, estimate; far less
+at SF9); lines go out one at a time, each acked. ICS-213 is a different form that ARES/RACES use a lot, and Winlink forms are
+probably the usual route: which forms matter is a question for Walter; not verified whether any APRS client implements radiograms.
+An "event kit" combines pieces already in this design: objects for aid stations/checkpoints (the spec itself uses first-aid posts
+and marathon checkpoints as examples), the bulletin board for net announcements, acked messages for tactical traffic, position
+beacons, radiograms for formal traffic, and a settings profile per net.
+
 ## Notifications
 Haptic (DRV2605), status-bar badge, backlight flash, optional sound via the audio codec later; per-contact mute and quiet hours.
 
