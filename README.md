@@ -32,6 +32,18 @@ before them; one SPI bus shared by display, SD, LoRa, NFC.
   The T-Deck's `.nav` vector format is not planned.
 - SD: LilyGO documents "up to 32 GB"; test the 128 GB FAT32 T-Deck card on the real pager.
 
+## Raster benchmark (src/bench, `pio run -e bench` for the pager, `-e bench_tdeck` for a T-Deck)
+Read-only (SD + screen, no radio). Per zoom: SD read, JPEG decode into a 256x256 RGB565 sprite in PSRAM, push to display,
+and a 6-tile frame (about one 480x222 view, no cache).
+**T-Deck result 2026-11-22** (ESP32-S3 240 MHz, 128 GB FAT32 card, BAYAREA terrain tiles, first 12 tiles per zoom,
+20 MHz SD): read 22-23 ms, decode 48-51 ms, push 21 ms (40 MHz panel, 256x256) = ~91-96 ms per z10/z12 tile (15-17 KB);
+a 6-tile frame with no cache is 430-490 ms. z14 sample was small (2 KB tiles, probably sparse) so 65 ms/tile is optimistic.
+SD read speed saturates: 4 MHz 251 KB/s, 10 MHz 489, 20 MHz 726, 40 MHz 734 KB/s (so use 20 MHz).
+Decode is about half the time, so a decoded-tile cache in PSRAM (128 KB per tile) matters more than anything else.
+**PSRAM gotcha:** the T-Deck's 8 MB PSRAM is OCTAL: with `qio_qspi` it was not found at all (found=0, no error),
+with `qio_opi` it works. The pager's PSRAM type is unverified (an agent said QSPI): run `-e bench` and if it prints
+`PSRAM found=0` try `qio_opi`. Pager numbers still to be measured (display push should be faster at 75 MHz).
+
 ## Before the first flash
 Take a full flash backup so the factory firmware can be restored:
 
