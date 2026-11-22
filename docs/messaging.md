@@ -36,6 +36,11 @@ via a mirror, aprs.org/txt/messages101.txt, aprs.org/aprs11/replyacks.txt and ap
 - No 2025-26 official spec revision found; multi-line and longer-than-67 sending are not specified.
 - No real group chat in APRS: groups are bulletin conventions or `CQ`/`ALL` addressing.
 
+## Do bulletins show on aprs.fi? (verified 2026-11-22, aprs.fi user guide "Messages and Status")
+Yes: aprs.fi has a Bulletin board page listing all bulletins recently transmitted and passed on to APRS-IS, with lookup of custom
+bulletin groups. It is a view-only page (no alert; aprs.fi cannot transmit). A bulletin only gets there if an iGate hears it and
+forwards it to APRS-IS; whether common LoRa APRS iGates forward bulletins is not verified.
+
 ## Reaching the pager from the internet (verified rules, inferred consequence)
 An iGate may gate internet traffic to RF only for stations heard locally within the last hour or less, and must not gate
 generic `?` queries. Inference: the pager is reachable from APRS-IS only if a TX-capable iGate nearby heard it within the hour,
