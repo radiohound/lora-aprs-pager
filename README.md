@@ -23,6 +23,15 @@ before them; one SPI bus shared by display, SD, LoRa, NFC.
 5. Heard stations on the map.
 6. Screens, messages, settings, power saving.
 
+## Map design rules (decided 2026-11-22)
+- Raster first, vector later. Raster: read the standard `<z>/<x>/<y>.jpg|png` tile layout (256 px, FAT32), the same
+  layout a T-Deck LoRa APRS card uses, so one SD card works in both. No code or assets from the T-Deck firmware.
+- Scan all region folders and let the user choose (the T-Deck firmware cannot); accept any zoom present on the card.
+- Draw our own station symbols; draw a small data-credit line on the map screen (OSM, USGS, etc. as the tiles require).
+- Vector later: render Mapbox Vector Tiles from the terrain pipeline's PMTiles (PMTiles reader + MVT decoder + a style).
+  The T-Deck's `.nav` vector format is not planned.
+- SD: LilyGO documents "up to 32 GB"; test the 128 GB FAT32 T-Deck card on the real pager.
+
 ## Before the first flash
 Take a full flash backup so the factory firmware can be restored:
 
