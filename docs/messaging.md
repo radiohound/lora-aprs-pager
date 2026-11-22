@@ -178,6 +178,22 @@ so names include the callsign; airtime is roughly 40-50 bytes before the AX.25 h
 to repeat an object is not in chapter 11, read the rest of the spec before choosing; display in other clients (aprs.fi, apps) is
 not verified. Symbol choice for a meeting spot: check the symbol table (APRS-Symbols.pdf in the wb2osz/aprsspec repo).
 
+## Emoticons: ASCII on the air, graphic icons on the screen (Walter 2026-11-22)
+Send plain ASCII (`:)`, `:(`, `;)`, `<3` ...) so every client and radio can read it and no extra bytes are used (2-3 bytes each);
+the pager draws small graphic icons in their place when displaying. The stored log and the packet always keep the ASCII; the
+rendering is display-only, with a "show raw text" toggle. UTF-8 emoji are not sent (UTF-8 is allowed in message text per the 1.2
+draft, but costs up to 4 bytes each, it is unknown whether 67 counts characters or bytes, and many clients cannot show them).
+- **Input:** type the ASCII, or pick from an emoticon palette with the knob (the pick inserts the ASCII); the one-tap replies can
+  use the same list. The compose box shows the icon live.
+- **Matching rules:** only a fixed list, and only when surrounded by spaces or line ends, so `10:30`, `http://`, `(c)` or `re:)`
+  are not turned into faces. Initial list to settle: `:)` `:-)` `:(` `:-(` `;)` `:D` `:P` `:O` `:|` `:/` `<3` `XD` `B)` `:'(`
+  `8)` and a thumbs-up like `(y)` (mark each as proposal).
+- **Icons:** our own small bitmaps (about 16x16 or 20x20 RGB565 in flash, drawn inline at text height). Do not copy a vendor's
+  emoji set; if an open emoji set is wanted, check its licence first (not looked up).
+- **Incoming UTF-8 emoji from other clients:** show a placeholder box at first; optionally map a few very common ones to our icons
+  later (font and byte-count questions unverified).
+- **Screenshots/mockups:** the icons appear in the screenshots, so the screenshot tool shows exactly what users see.
+
 ## Notifications
 Haptic (DRV2605), status-bar badge, backlight flash, optional sound via the audio codec later; per-contact mute and quiet hours.
 
