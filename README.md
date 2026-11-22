@@ -25,7 +25,7 @@ before them; one SPI bus shared by display, SD, LoRa, NFC.
 6. Screens, messages, settings, power saving.
 
 ## Controls
-The rotary encoder is a primary control everywhere (scroll lists/threads, zoom the map, press = select, long press = menu); the keyboard types and gives shortcuts. See `docs/messaging.md`.
+The rotary encoder is a primary control everywhere: every screen and menu must be fully usable with the knob alone (turn = move, press = select, long press = back/context menu), plus scrolling threads and zooming the map; the keyboard types and gives shortcuts. See `docs/messaging.md`.
 
 ## Map design rules (decided 2026-11-22)
 - Raster first, vector later. Raster: read the standard `<z>/<x>/<y>.jpg|png` tile layout (256 px, FAT32), the same

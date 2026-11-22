@@ -33,7 +33,11 @@ EMAIL-2 (email gateway; the old server retired 2019, javAPRSSrvr replaced it; wa
 the address; 2026 operation not confirmed). SMSGTE (conflicting reports, status unknown). Winlink via APRSlink (not read).
 CA2RXU's tracker has an "APRSThursday" menu entry. WHO-IS/INFO/position responders: not verified.
 
-## Controls: use the rotary encoder (Walter, 2026-11-22: remember the scroll knob)
+## Controls: use the rotary encoder (Walter, 2026-11-22: remember the scroll knob; "knob for messaging and menus")
+Rule: EVERY screen and menu must be fully usable with the knob alone (turn = move, press = select, long press = back/context
+menu); the keyboard is for typing text and optional shortcuts, never required to navigate. That covers the main menu, settings,
+context menus, confirm dialogs (turn to choose Yes/No, press to confirm), pickers (To field autocomplete, canned replies,
+station list, region/map picker), the conversation list, threads and bulletins.
 The pager's rotary encoder (A=GPIO40, B=41, press=7; Meshtastic enables internal pull-ups for it) is the main way to move:
 turn = scroll lists, threads and canned replies (hold a key or modifier for page-sized jumps); press = open/select (Enter);
 long press = context menu (reply, delete, detail). Keyboard is for typing and shortcuts. Same idea elsewhere: knob zooms
