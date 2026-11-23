@@ -4,6 +4,7 @@
 #pragma once
 #include <string>
 #include <vector>
+#include "textedit.h"
 
 static const char *CANNED[] = {"OK", "QSL", "On my way", "Where are you?", "Running late", "73"};
 static const int NCANNED = 6;
@@ -73,29 +74,6 @@ static std::string stateText(const msg::Msg &x, uint32_t now) {
   }
   return "";
 }
-
-// Typing: letters from the keyboard, Alt held = symbols/digits, Shift = next letter capital.
-class TextEdit {
-public:
-  char buf[72] = ""; int len = 0, maxLen = 67; bool callMode = false, shiftOnce = false, altHeld = false;
-  enum R { NONE, CHANGED, ENTER, BACK_EMPTY };
-  void clear() { len = 0; buf[0] = 0; shiftOnce = altHeld = false; }
-  void set(const char *s) { strncpy(buf, s, maxLen); buf[maxLen] = 0; len = strlen(buf); }
-  R feed(uint8_t raw, bool down) {
-    if (raw == KEY_ALT) { altHeld = down; return NONE; }
-    if (!down) return NONE;
-    if (raw == KEY_SHIFT) { shiftOnce = !shiftOnce; return CHANGED; }
-    if (raw == KEY_ENTER) return ENTER;
-    if (raw == KEY_BACKSPACE) { if (!len) return BACK_EMPTY; buf[--len] = 0; return CHANGED; }
-    KeyInfo k = keyLookup(raw, altHeld, shiftOnce && !callMode);
-    if (!k.ch || (unsigned char)k.ch < 32 || (k.mod != KM_NONE && k.mod != KM_SPACE) || len >= maxLen) return NONE;     // never a control character
-    if (callMode && (k.ch == ' ' || !(isalnum((unsigned char)k.ch) || k.ch == '-'))) return NONE;
-    char c = callMode ? toupper((unsigned char)k.ch) : k.ch;
-    buf[len++] = c; buf[len] = 0;
-    if (k.ch >= 'a' && k.ch <= 'z') shiftOnce = false;
-    return CHANGED;
-  }
-};
 
 enum UiScreen { UI_OFF, UI_CONVS, UI_THREAD, UI_COMPOSE };
 enum UiAct { A_NONE, A_UNDO, A_REPLY, A_CANCEL_RETRY, A_DEL_MSG, A_DEL_CONV_ASK, A_DEL_ALL_ASK, A_YES, A_NO, A_BACK_LIST, A_BACK_MAP, A_NEW, A_DEL_CONV_SEL_ASK };
@@ -331,7 +309,7 @@ struct MsgUi {
     D.setTextSize(1);
     D.setCursor(8, 188); D.setTextColor(canned >= 0 ? TFT_YELLOW : C_GRAY, C_BG);
     D.printf("Turn the knob for quick replies: %s", canned >= 0 ? CANNED[canned] : "(none)");
-    D.setCursor(8, 199); D.setTextColor(C_GRAY, C_BG); D.print("Alt held = digits and symbols   Shift = next letter capital");
+    D.setCursor(8, 199); D.setTextColor(C_GRAY, C_BG); D.print("Alt = digits, symbols   Alt+Shift = ( ) < > [ ] # % & ^   Shift = capital");
     footer(D, focus == 0 ? "type the call sign, Enter: next" : "Enter or press: send   hold: menu   Backspace: edit To");
   }
   void drawMenu(lgfx::LovyanGFX &D) {

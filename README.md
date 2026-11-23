@@ -41,10 +41,12 @@ The firmware only **reads** the SD card. Settings and messages live in the pager
 |---|---|
 | ![Full list, following](docs/screenshots/demo-full-list-following.png) | ![Full list, just heard](docs/screenshots/demo-full-list-just-heard.png) |
 | FULL LIST view (demo data): everything about the selected station | A station that has just been heard lights up (demo data) |
-| ![Terrain and trails](docs/screenshots/map-trails.png) | ![Conversations](docs/screenshots/conversations.png) |
-| Terrain, grade-coloured trails and peak heights from your own map card | The conversation list |
-| ![Setup](docs/screenshots/setup.png) | ![MAP+STATIONS view](docs/screenshots/demo-map-stations.png) |
-| Phone setup: scan the left code to join the pager's hotspot, the right one to open the page | MAP+STATIONS view (demo data) |
+| ![MAP+STATIONS view](docs/screenshots/demo-map-stations.png) | ![Terrain and trails](docs/screenshots/map-trails.png) |
+| MAP+STATIONS view (demo data) | Terrain, grade-coloured trails and peak heights from your own map card |
+| ![Writing a message](docs/screenshots/compose.png) | ![Message list](docs/screenshots/conversations.png) |
+| Writing a message: the call sign and the text (`:)` typed with Alt+Shift) | Message list |
+| ![Setup](docs/screenshots/setup.png) | |
+| Phone setup: scan the left code to join the pager's hotspot, the right one to open the page | |
 
 ## Controls
 
@@ -70,7 +72,8 @@ The rotary knob works everywhere on its own; the keyboard types text and gives s
 
 **Full list view:** turn = select a station, press = write a message to it, long press = show it on the map.
 **Messages:** `N` new message, turn = move, press = open / reply / send, long press = menu (reply, cancel retries, delete message,
-delete conversation, delete all, undo), `Backspace` = back, `M` = back to the map. Typing: `Alt` held = digits and symbols, `Shift` = next letter capital.
+delete conversation, delete all, undo), `Backspace` = back, `M` = back to the map. Typing: hold `Alt` = digits and symbols (`* / + - = : ' " @ _ $ ; ? ! , .`), hold `Alt` and `Shift` together = `( ) < > [ ] \ # % & ^` and the back quote
+(so emoticons like `:)` and `<3` can be typed), tap `Shift` = the next letter is a capital.
 
 ## Power
 
@@ -131,11 +134,11 @@ The tile files are made elsewhere (the terrain pipeline); this repository only r
 
 The parsers and engines are plain C++ and are tested on a PC:
 
-    for t in aprs geo settings messaging emoticons; do
+    for t in aprs geo settings messaging emoticons textedit; do
       c++ -std=c++17 -I src test/host/test_$t.cpp -o /tmp/test_$t && /tmp/test_$t; done
 
 They cover the APRS frame parser and beacon builder, GPS sentences, distance and bearing, the settings validation, the messaging engine
-(including a message and its ack going through two engines), and the emoticon matcher.
+(including a message and its ack going through two engines), the emoticon matcher, and the keyboard map and text entry (key sequences with the real key numbers).
 
 ## Layout
 

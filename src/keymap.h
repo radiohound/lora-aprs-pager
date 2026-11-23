@@ -3,7 +3,7 @@
 // raw 97 + row index (confirmed: p = 97, Enter = 98). Backspace is matrix key 30 (confirmed). Orange keys: left = 21 (Alt in LilyGO's table), right = 29 (Caps/Shift).
 // Layout follows LilyGoLib's pager keymap (4 rows x 10 columns).
 #pragma once
-#include <Arduino.h>
+#include <cstdint>
 
 enum KeyMod : uint8_t { KM_NONE, KM_ALT, KM_SHIFT, KM_BACKSPACE, KM_ENTER, KM_SPACE };
 
@@ -19,7 +19,7 @@ static const char KEYMAP_BASE[4][10] = {
   {0,  'z','x','c','v','b','n','m',0,  0},
   {' ',0,0,0,0,0,0,0,0,0}
 };
-// Symbol layer (while Space is held as the symbol key, as LilyGO does; to be refined by feel)
+// Symbol layer (hold Alt)
 static const char KEYMAP_SYMBOL[4][10] = {
   {'1','2','3','4','5','6','7','8','9','0'},
   {'*','/','+','-','=',':','\'','"','@',0},
@@ -27,9 +27,19 @@ static const char KEYMAP_SYMBOL[4][10] = {
   {' ',0,0,0,0,0,0,0,0,0}
 };
 
-// raw: 1..40 from the TCA8418 (without the press bit). symbol: symbol layer active. shift: capital letters.
-inline KeyInfo keyLookup(uint8_t raw, bool symbol = false, bool shift = false) {
-  if (raw == KEY_P) return {symbol ? '0' : (shift ? 'P' : 'p'), KM_NONE};
+// Second symbol layer (hold Alt and Shift together): what the first layer lacks, so ":)" ":(" "<3" and common punctuation can be typed.
+static const char KEYMAP_SYMBOL2[4][10] = {
+  {'(', ')', '<', '>', '[', ']', '\\', '#', '%', '&'},       // on the q w e r t y u i o p keys
+  {'^', '`', 0, 0, 0, 0, 0, 0, 0, 0},                          // on a s ...
+  {0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+  {' ', 0, 0, 0, 0, 0, 0, 0, 0, 0}
+};
+
+// raw: 1..40 (and 97, 98) from the TCA8418 (without the press bit). symbol: Alt held (digits and symbols). symbol2: Alt AND Shift held (the second layer).
+// shift: next letter capital (base layer only).
+inline KeyInfo keyLookup(uint8_t raw, bool symbol = false, bool shift = false, bool symbol2 = false) {
+  const char (*layer)[10] = symbol2 ? KEYMAP_SYMBOL2 : (symbol ? KEYMAP_SYMBOL : KEYMAP_BASE);
+  if (raw == KEY_P) { char c = layer[0][9]; if (shift && !symbol && !symbol2 && c >= 'a' && c <= 'z') c -= 32; return {c, KM_NONE}; }
   if (raw < 1 || raw > 40) { if (raw != KEY_ENTER) return {0, KM_NONE}; }
   if (raw == 20) return {0, KM_NONE};            // matrix key 20 is the Enter key's second contact; Enter itself is raw 98
   switch (raw) {
@@ -40,7 +50,7 @@ inline KeyInfo keyLookup(uint8_t raw, bool symbol = false, bool shift = false) {
     case KEY_SPACE:     return {' ', KM_SPACE};
   }
   uint8_t i = raw - 1;
-  char c = (symbol ? KEYMAP_SYMBOL : KEYMAP_BASE)[i / 10][i % 10];
-  if (shift && !symbol && c >= 'a' && c <= 'z') c -= 32;
+  char c = layer[i / 10][i % 10];
+  if (shift && !symbol && !symbol2 && c >= 'a' && c <= 'z') c -= 32;
   return {c, KM_NONE};
 }
