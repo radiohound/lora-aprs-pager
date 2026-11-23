@@ -2,6 +2,7 @@
 // Frame on the air: 3C FF 01 + TNC2 text "SRC>DST,PATH:info". Handles uncompressed and compressed positions
 // (! = / @ and objects ;). Mic-E and other formats are ignored for now.
 #pragma once
+#include <algorithm>
 #include <cstring>
 #include <cstdlib>
 #include <cmath>
@@ -12,6 +13,7 @@ struct AprsPos {
   double lat, lon;
   char table, sym;    // APRS symbol table and code
   bool object;
+  char comment[44];   // free text after the position (made printable, cut to 43 characters); may start with a course/speed or altitude extension
 };
 
 namespace aprs_detail {
@@ -38,16 +40,21 @@ inline bool b91(const char *p, long &v) {
   for (int i = 0; i < 4; i++) { if (p[i] < 33 || p[i] > 124) return false; v = v * 91 + (p[i] - 33); }
   return true;
 }
+inline void setComment(AprsPos &o, const char *c, size_t n) {
+  size_t k = 0;
+  for (size_t i = 0; i < n && k < sizeof o.comment - 1; i++) o.comment[k++] = (c[i] >= 32 && c[i] < 127) ? c[i] : '.';
+  o.comment[k] = 0;
+}
 // position starting at p (info text), n = chars available
 inline bool position(const char *p, size_t n, AprsPos &o) {
   if (n >= 19 && (p[0] >= '0' && p[0] <= '9')) {                 // uncompressed: lat8 table lon9 sym
     if (!uncompressedLat(p, o.lat) || !uncompressedLon(p + 9, o.lon)) return false;
-    o.table = p[8]; o.sym = p[18]; return true;
+    o.table = p[8]; o.sym = p[18]; setComment(o, p + 19, n - 19); return true;
   }
   if (n >= 10) {                                                   // compressed: table y4 x4 sym
     long y, x; if (!b91(p + 1, y) || !b91(p + 5, x)) return false;
     o.lat = 90.0 - y / 380926.0; o.lon = -180.0 + x / 190463.0;
-    o.table = p[0]; o.sym = p[9]; return true;
+    o.table = p[0]; o.sym = p[9]; setComment(o, p + (n >= 13 ? 13 : 10), n >= 13 ? n - 13 : n - 10); return true;
   }
   return false;
 }
@@ -98,4 +105,24 @@ inline size_t aprsBuildBeacon(unsigned char *out, size_t n, const char *call, co
   out[0] = 0x3C; out[1] = 0xFF; out[2] = 0x01;
   int k = snprintf((char *)out + 3, n - 3, "%s>%s%s%s:!%s%s", call, tocall, path && *path ? "," : "", path ? path : "", pos, comment ? comment : "");
   return (k > 0 && (size_t)k < n - 3) ? (size_t)k + 3 : 0;
+}
+
+// ---- How a packet reached us ----
+// From the frame text (after the 3C FF 01 header) "SRC>DST,HOP1,HOP2*:info": path = what follows the destination ("" if none), via = the LAST hop
+// marked with "*" (the digipeater that repeated it, without the star), "" if no hop has the star (heard directly, or the path is not used up yet).
+inline void aprsPathInfo(const char *t, size_t n, char *path, size_t pathCap, char *via, size_t viaCap) {
+  path[0] = 0; via[0] = 0;
+  const char *colon = (const char *)memchr(t, ':', n); if (!colon) return;
+  const char *comma = (const char *)memchr(t, ',', colon - t); if (!comma) return;
+  size_t pl = colon - comma - 1; if (pl >= pathCap) pl = pathCap - 1;
+  memcpy(path, comma + 1, pl); path[pl] = 0;
+  const char *hopStart = path;
+  for (const char *c = path;; c++) {
+    if (*c == ',' || *c == 0) {
+      size_t hl = c - hopStart;
+      if (hl > 1 && hopStart[hl - 1] == '*') { size_t k = std::min(hl - 1, viaCap - 1); memcpy(via, hopStart, k); via[k] = 0; }
+      if (*c == 0) break;
+      hopStart = c + 1;
+    }
+  }
 }

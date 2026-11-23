@@ -1,87 +1,176 @@
 # pager-tracker
 
-LoRa APRS (433.775 MHz) tracker and station map for the LilyGO T-LoRa Pager (433 MHz).
-Own firmware, own map renderer; reuses the portable C frame code from the E77 tracker
-(`LoRa-Tracker-Digipeater/lib/lacf3`, MIT) later, once the radio works.
+A LoRa APRS tracker, station map and messenger for the **LilyGO T-LoRa Pager (433 MHz)**, written from scratch.
+It listens on 433.775 MHz, draws the stations it hears on a map from your own SD card, beacons your position, and sends and receives
+APRS messages with acknowledgements, all on the pager's own screen, rotary knob and keyboard. Setup is done from a phone.
 
-Research (2026-11-22): no existing LoRa APRS firmware for the Pager and no handheld that draws
-heard LoRa APRS stations on its own screen was found. "No prior art found", not proof of first.
-Nearest: Trail Mate (Pager, SD tile map, Meshtastic/MeshCore only), 2E0LXY T-Deck Plus tracker
-(map planned, 439.9125 MHz), dk8hc T-Deck+ (list only), CA2RXU tracker (no Pager, no map).
+> **Status (2026-11-23):** working on a real pager, used and tested by its author. Private repository, not released.
+> **It transmits.** You need an amateur radio licence and your own call sign. The pager will not transmit until a call sign is saved.
 
-## Hardware (pins in `src/pins.h`, from LilyGoLib + Meshtastic variant, which agree)
-ESP32-S3 16 MB flash / 8 MB QSPI PSRAM; ST7796 480x222 colour, no reset line; SX1262 (LilyGO docs)
-or LR1121 (Meshtastic device page) - milestone 1 probes both; MIA-M10Q GPS 38400 baud; TCA8418
-keyboard; rotary encoder; XL9555 expander powers LoRa/GPS/keyboard/SD and MUST be initialised
-before them; one SPI bus shared by display, SD, LoRa, NFC.
+![Map with stations](docs/screenshots/map-final-2.png)
 
-## Milestones
-1. **Bring-up (this commit):** expander, I2C scan, display test, battery, SD, GPS NMEA, radio probe and RX-only listen. NOT YET RUN ON HARDWARE.
-2. Radio: decode received LoRa APRS packets.
-3. Tracker: GPS beacons (needs licence/callsign settings; nothing transmits before this).
-3b. Messaging (see `docs/messaging.md`): receive and show, then send with ack/retry, conversations, reply, delete.
-4. Map: raster tiles from SD (`<z>/<x>/<y>.jpg|png`), own position.
-5. Heard stations on the map.
-6. Screens, messages, settings, power saving.
+## What it does
+
+- **Map.** Reads the standard `<z>/<x>/<y>.png|jpg` raster tile layout from the SD card (the same layout the T-Deck LoRa APRS
+  firmware uses, so one card works in both). Knob to pan and zoom, GPS position, centre on me. Decoded tiles are cached in PSRAM.
+- **Heard stations.** Decodes LoRa APRS position packets (plain and compressed positions, objects), draws each station with its
+  APRS symbol (24 px, including overlay letters), and keeps a list. Icons that would overlap are fanned out with a line to the true
+  position, and the labels are stacked so none covers another. Your own symbol and call sign are drawn too.
+- **Four views on the L key**, named in the top line: `LIST+MAP`, `MAP+STATIONS`, `MAP ONLY`, `FULL LIST`. The full list shows, for each
+  station, how long ago it was heard, how many packets, whether it came directly or through a digipeater (and which), the path, RSSI and
+  SNR, position, distance and bearing from you, its comment, and the complete packet text.
+- **Beacon.** Sends your position with your chosen symbol and comment. Listens first (channel activity detection) and skips the beacon if
+  the channel is busy. Auto-beaconing is **off at power-on** unless you switch that on in setup; moving it beacons about once a minute
+  after 150 m, standing still every 10 minutes (all settable).
+- **Messaging** (design in [docs/messaging.md](docs/messaging.md)). Conversations per call sign with unread badges, threads, compose with
+  quick replies on the knob, acks and retries (30 s, then doubling, six tries), one open message per addressee, delete with undo,
+  ASCII emoticons drawn as pictures on the screen (the text on the air stays plain ASCII), RSSI and SNR on received messages.
+  Messages are kept in the pager's flash.
+- **Setup from a phone.** Press Enter: the pager opens its own WiFi hotspot (random password, QR code on the screen) and serves a
+  setup page at `http://192.168.4.1`: call sign, symbol (with a picker), comment, path, power, beacon intervals, haptics, brightness.
+  The hotspot is off again when you leave the screen.
+- **Haptic feedback** on knob clicks, new messages, acks and errors.
+- **Screenshots over USB** for documentation (`tools/screenshot.py`).
+
+The firmware only **reads** the SD card. Settings and messages live in the pager's own flash.
+
+| | |
+|---|---|
+| ![Thread](docs/screenshots/msg-9.png) | ![Conversations](docs/screenshots/msg-7.png) |
+| A thread, with emoticon pictures and delivery status | The conversation list |
 
 ## Controls
-The rotary encoder is a primary control everywhere: every screen and menu must be fully usable with the knob alone (turn = move, press = select, long press = back/context menu), plus scrolling threads and zooming the map; the keyboard types and gives shortcuts. See `docs/messaging.md`.
 
-## Map design rules (decided 2026-11-22)
-- Raster first, vector later. Raster: read the standard `<z>/<x>/<y>.jpg|png` tile layout (256 px, FAT32), the same
-  layout a T-Deck LoRa APRS card uses, so one SD card works in both. No code or assets from the T-Deck firmware.
-- Scan all region folders and let the user choose (the T-Deck firmware cannot); accept any zoom present on the card.
-- Draw our own station symbols; draw a small data-credit line on the map screen (OSM, USGS, etc. as the tiles require).
-- Vector later: render Mapbox Vector Tiles from the terrain pipeline's PMTiles (PMTiles reader + MVT decoder + a style).
-  The T-Deck's `.nav` vector format is not planned.
-- SD: LilyGO documents "up to 32 GB"; test the 128 GB FAT32 T-Deck card on the real pager.
+The rotary knob works everywhere on its own; the keyboard types text and gives shortcuts.
 
-## Raster benchmark (src/bench, `pio run -e bench` for the pager, `-e bench_tdeck` for a T-Deck)
-Read-only (SD + screen, no radio). Per zoom: SD read, JPEG decode into a 256x256 RGB565 sprite in PSRAM, push to display,
-and a 6-tile frame (about one 480x222 view, no cache).
-**T-Deck result 2026-11-22** (ESP32-S3 240 MHz, 128 GB FAT32 card, BAYAREA terrain tiles, first 12 tiles per zoom,
-20 MHz SD): read 22-23 ms, decode 48-51 ms, push 21 ms (40 MHz panel, 256x256) = ~91-96 ms per z10/z12 tile (15-17 KB);
-a 6-tile frame with no cache is 430-490 ms. z14 sample was small (2 KB tiles, probably sparse) so 65 ms/tile is optimistic.
-SD read speed saturates: 4 MHz 251 KB/s, 10 MHz 489, 20 MHz 726, 40 MHz 734 KB/s (so use 20 MHz).
-Decode is about half the time, so a decoded-tile cache in PSRAM (128 KB per tile) matters more than anything else.
-**PSRAM gotcha:** the T-Deck's 8 MB PSRAM is OCTAL: with `qio_qspi` it was not found at all (found=0, no error),
-with `qio_opi` it works. The pager's PSRAM type is unverified (an agent said QSPI): run `-e bench` and if it prints
-`PSRAM found=0` try `qio_opi`. Pager numbers still to be measured (display push should be faster at 75 MHz).
+**Map**
 
-## Vector tile workload (measured on the Mac, 2026-11-22, `tools/count_vec.py`)
-Pipeline archives california_r2_vector.pmtiles + _vector_osm.pmtiles (MVT, gzip, z6-14), tiles summed. Land cover is a raster
-PNG archive, so forest/landcover shading is NOT in the vector data; polygons are rare (water only).
-| area, zoom | gz KB | features | vertices |
-| SF downtown z12 / z14 | 36 / 33 | 3,791 / 2,517 | 8.5k / 5.3k |
-| San Jose downtown z12 / z14 | 49 / 25 | 4,972 / 1,769 | 12.0k / 4.3k |
-| Sunnyvale suburb z14 | 11 | 638 | 2.1k |
-| Mt Hamilton (open) z12 / z14 | 7 / 5 | 175 / 57 | 3.0k / 1.6k |
-| Yosemite Valley z12 / z14 | 17 / 12 | 542 / 415 | 6.4k / 2.7k |
-| High Sierra z12 / z14 | 8.5 / 2.8 | 239 / 45 | 3.3k / 0.8k |
-z10 tiles are unfiltered and huge (San Jose 181 KB gz, 22k features, 51k vertices): a device renderer must filter by road
-class per zoom. Vector is smaller than the 15-17 KB JPEGs only in open country; dense towns are 25-50 KB. Lines dominate
-(roads, trails, streams, contours). Break-even vs the uncached raster frame (~450 ms): a 6-tile dense view is ~15k features /
-~30k vertices, so vector must draw about 33 features/ms to match. Drawing speed on the ESP32-S3 is NOT measured yet.
+| | |
+|---|---|
+| Knob turn / short press | move or zoom / change what turning does (pan W-E, pan N-S, stations, zoom) |
+| Knob long press | centre the map on my GPS position |
+| `L` | next view: LIST+MAP, MAP+STATIONS, MAP ONLY, FULL LIST |
+| `S` | station list order: nearest first / most recent first |
+| `M` | messages |
+| `C` | centre on me |
+| `T` | auto-beacon on / off (off at every power-on unless set in setup) |
+| `B` | send one beacon now |
+| `Backspace` | main menu: messages, phone setup, beacon now, auto-beacon, power off |
+| `Enter` | phone setup |
+| `P` | send a screenshot over USB (with `tools/screenshot.py`) |
 
-## Before the first flash
-Take a full flash backup so the factory firmware can be restored:
+**Main menu** (Backspace on the map): turn = move, press = choose, long press or Backspace = close.
 
-    ~/.platformio/penv/bin/python ~/.platformio/packages/tool-esptoolpy/esptool.py \
-      --chip esp32s3 --port <PORT> read_flash 0x0 0x1000000 pager-factory-16MB.bin
+**Full list view:** turn = select a station, press = write a message to it, long press = show it on the map.
+**Messages:** `N` new message, turn = move, press = open / reply / send, long press = menu (reply, cancel retries, delete message,
+delete conversation, delete all, undo), `Backspace` = back, `M` = back to the map. Typing: `Alt` held = digits and symbols, `Shift` = next letter capital.
 
-The pager may need DFU mode (hold BOOT while plugging USB). Restore with `write_flash 0x0 <file>`.
+## Power
 
-## Unverified
-- Display rotation / offset (`PAGER_ROTATION`, `offset_rotation` in `src/display.h`): check the TL/TR/BL/BR corner labels.
-- BQ27220 read commands 0x08 (mV) and 0x2C (%): from memory of the datasheet, not checked.
-- Which LoRa chip is fitted; the radio-detect ADC pin LilyGoLib uses is not used here.
-- Whether the pager has touch (GT911 mentioned only in a search snippet).
+- **Turn off:** Backspace, choose **Power off**, then **Yes, power off** (the menu starts on No). The pager stops the beacon, saves your
+  messages, puts the radio to sleep and tells the battery charger chip (BQ25896) to disconnect the battery. It **refuses while USB is
+  connected** ("Unplug USB first"): that is the chip's own rule. Tested on the author's pager: it switched off.
+- **Turn on:** hold the **POWER** button for about a second (bottom edge: RST, BOOT, **POWER**, SD socket, USB-C), or plug in USB.
+  It starts like any power-on: your settings and messages are kept, auto-beacon is off unless you set it to start on.
+- RST restarts the application; BOOT with RST is download mode for flashing (see below). Neither switches the pager off.
 
-Build: `~/.platformio/penv/bin/pio run`.
+## Hardware
 
-## Credits for pictures in the firmware (not covered by this project's own licence)
-- **APRS symbols**: the aprs.fi symbol set by Heikki Hannikainen, OH7LZB (https://github.com/hessu/aprs-symbols). Its licences are mixed (many
-  CC BY-SA 2.0 or public domain; the originals come from older APRS software): read its COPYRIGHT.md before making this repository public.
-  Built into `src/symbols24.bin` and `src/web/sym*.png` by `tools/make_symbols.py` and `tools/make_symbol_sheets.py`.
-- **Emoticon pictures**: Twemoji graphics, (c) Twitter, Inc and other contributors, CC-BY 4.0 (https://github.com/jdecked/twemoji, LICENSE-GRAPHICS).
-  Built into `src/emoji18.bin` by `tools/make_emoji.py`. What is sent on the air is always plain ASCII; the pictures are only drawn on the screen.
+ESP32-S3, 16 MB flash, 8 MB QSPI PSRAM; ST7796 480x222 colour display; **SX1262** radio (the unit it was developed on; an LR1121 version
+exists and the bring-up test probes both, but the application drives the SX1262 only); MIA-M10Q GPS; TCA8418 keyboard; rotary encoder; DRV2605 haptic driver; BQ27220 fuel gauge;
+XL9555 I/O expander that switches power to the radio, GPS, keyboard and SD and **must be initialised before them**; one SPI bus shared by the
+display, SD card, radio and NFC. Pins are in `src/pins.h` and match LilyGoLib's pager variant.
+
+Things worth knowing (all found on the real hardware):
+- Keyboard: the `P` key arrives as raw code 97 and `Enter` as 98 (the chip reports the last column as GPIO-style events), and `Enter` also
+  closes matrix key 20. The map is in `src/keymap.h`. The keyboard chip has been seen to stop reporting keys; the firmware now checks its
+  setup once a second and re-programs it (cause not proven, suspected radio burst).
+- The screen's bytes are swapped for 16-bit pixels in LovyanGFX; icon blending in `src/viewer/viewer.cpp` accounts for that.
+- Opening the pager's USB serial port with DTR/RTS set resets the chip every time. `tools/screenshot.py` does not set them.
+
+## Build and flash
+
+    pio run -e viewer                       # the application
+    pio run -e viewer -t upload --upload-port <PORT>
+
+PlatformIO environments: `viewer` is the application (a legacy name; the real firmware), `pager` is the milestone-1 bring-up test,
+`bench` / `bench_tdeck` are the read-only tile benchmarks (see [docs/benchmarks.md](docs/benchmarks.md)).
+
+**Before the first flash, back up the factory firmware** (the LilyGO menu is replaced by this application):
+
+    python esptool.py --chip esp32s3 --port <PORT> read_flash 0x0 0x1000000 pager-factory-16MB.bin
+
+Restore with `write_flash 0x0 pager-factory-16MB.bin`. LilyGO also publishes factory images in
+`Xinyuan-LilyGO/LilyGoLib/firmware`. **To flash, the pager must be in download mode:** hold BOOT, tap RST, release BOOT. After flashing,
+press RST alone to start the new firmware.
+
+First start: press Enter, join the pager's hotspot from your phone (scan the QR code), open `http://192.168.4.1` and save your call sign.
+Until then the pager listens and shows the map but will not transmit.
+
+## SD card
+
+`/LoRa_Tracker/Maps/<REGION>/<z>/<x>/<y>.png` or `.jpg`, 256 px tiles on a FAT32 card (the T-Deck's 128 GB FAT32 card mounts
+as SDHC and works). The first region folder found is used; zoom levels 6, 7, 8, 10, 12 and 14.
+The tile files are made elsewhere (the terrain pipeline); this repository only reads them.
+
+## Tests
+
+The parsers and engines are plain C++ and are tested on a PC:
+
+    for t in aprs geo settings messaging emoticons; do
+      c++ -std=c++17 -I src test/host/test_$t.cpp -o /tmp/test_$t && /tmp/test_$t; done
+
+They cover the APRS frame parser and beacon builder, GPS sentences, distance and bearing, the settings validation, the messaging engine
+(including a message and its ack going through two engines), and the emoticon matcher.
+
+## Layout
+
+| | |
+|---|---|
+| `src/viewer/viewer.cpp` | the application: map, stations, beacon, setup hotspot, glue |
+| `src/aprs.h`, `src/nmea.h`, `src/geo.h` | APRS frames, GPS sentences, distance / bearing (plain C++) |
+| `src/messaging.h`, `src/msg_ui.h`, `src/emoticons.h` | messaging engine, its screens, emoticon matching |
+| `src/settings_core.h`, `src/webui.h` | settings and their validation, the phone setup page |
+| `src/beacon.h`, `src/haptic.h`, `src/inputs.h`, `src/keymap.h` | beacon timing, haptics, knob and keyboard |
+| `src/symbols24.bin`, `src/emoji18.bin`, `src/web/` | icon data built by the scripts in `tools/` |
+| `tools/` | icon builders, `screenshot.py`, `mockup/` (screenshot in a picture of the device), `count_vec.py` |
+| `docs/messaging.md` | the messaging design and the reasoning behind it |
+| `docs/benchmarks.md` | tile and vector measurements |
+
+## Not done yet
+
+Mic-E and other position formats are not decoded (those stations do not appear); bulletins, group text and meeting-spot objects are
+designed but not built; the battery level is not shown on screen; the LilyGO menu cannot be kept alongside this application (it needs a
+two-app flash layout); the tocall is the experimental `APZPGR` (a registered one is to be requested); vector maps are a later phase;
+no licence has been chosen for this code.
+
+## Before going public (checklist)
+
+An initial testing release is planned. Before the repository is made public:
+- **Choose a licence** for this code and add a `LICENSE` file (none chosen yet).
+- **Check the symbol licences**: the aprs.fi symbols have mixed licences (see Credits below); decide whether to ship them, replace them, or
+  fetch them at build time. Make sure the Twemoji credit stays.
+- **Screenshots**: those in `docs/screenshots` show the author's home area in the coordinates at the bottom of the map and in the station list;
+  retake them somewhere neutral or remove them. The call signs shown are public ones, but check what you want to keep.
+- **Register a tocall** (the pager transmits as the experimental `APZPGR` for now) and put it in `TOCALL` in `src/viewer/viewer.cpp`.
+- **Rename** the `viewer` PlatformIO environment (it is the real application) and decide how firmware is distributed (a built `.bin` with a
+  flashing note, for people who do not want to build it).
+- Re-read `docs/messaging.md` and the README for anything that is private or only true for the author's setup.
+
+## Credits and licences of things in the firmware
+
+These pictures are **not** covered by this project's own licence:
+- **APRS symbols:** the aprs.fi symbol set by Heikki Hannikainen, OH7LZB (https://github.com/hessu/aprs-symbols). Its licences are mixed
+  (many CC BY-SA 2.0 or public domain; the originals come from older APRS software). Read its `COPYRIGHT.md` before making this repository
+  public. Built into `src/symbols24.bin` and `src/web/sym*.png` by `tools/make_symbols.py` and `tools/make_symbol_sheets.py`.
+- **Emoticon pictures:** Twemoji graphics, (c) Twitter, Inc and other contributors, CC-BY 4.0 (https://github.com/jdecked/twemoji,
+  LICENSE-GRAPHICS), built into `src/emoji18.bin` by `tools/make_emoji.py`.
+
+Libraries: LovyanGFX (display), RadioLib (radio), and the Arduino-ESP32 core; see each project for its licence. Pin numbers and the board's
+start-up order were checked against LilyGO's LilyGoLib (MIT). The map tiles belong to whoever made them: credit them where they are shown.
+
+## Prior art (searched 2026-11-22)
+
+No existing LoRa APRS firmware for the Pager and no handheld that draws heard LoRa APRS stations on its own screen was found; that is
+"none found", not proof of first. Nearest: Trail Mate (Pager, SD tile map, Meshtastic/MeshCore only), a T-Deck Plus tracker by 2E0LXY
+(map planned, different frequency), dk8hc's T-Deck+ firmware (list only), and the CA2RXU tracker (no Pager, no map).

@@ -44,6 +44,20 @@ int main() {
   { std::string f = std::string("\x3c\xff\x03") + "K6ATV-4>APLRT1:!3720.50N/12154.30W>"; expect(!aprsParse((const unsigned char *)f.data(), f.size(), p), "LACF frame ignored"); }
   expect(parse("K6ATV-4>APLRT1:!3720.50N/12154.30W>", p, false), "no header also accepted");
 
+  // comment text after the position, and how the packet got here
+  expect(parse("K6ATV-10>APLPIK,WIDE1-1:!3720.50N/12154.30W#hill site", p) && std::string(p.comment) == "hill site", "uncompressed comment");
+  expect(parse("K6ATV-4>APLRT1:!3720.50N/12154.30W>", p) && p.comment[0] == 0, "no comment is empty");
+  expect(parse("N0CALL>APRS:!/5L!!<*e7>7P[ batt 90%", p) && std::string(p.comment) == " batt 90%", "compressed comment starts after the 13-character position");
+  expect(parse("K6ATV-4>APLRT1:@092345z3720.50N/12154.30W>go", p) && std::string(p.comment) == "go", "comment after a timestamped position");
+  { char path[32], via[16];
+    auto info = [&](const std::string &t) { aprsPathInfo(t.c_str(), t.size(), path, sizeof path, via, sizeof via); };
+    info("K6ATV-10>APLPIK,WIDE1-1:!3720.50N/12154.30W#"); expect(std::string(path) == "WIDE1-1" && via[0] == 0, "unused path: heard directly");
+    info("K6ATV-6>APZPGR,K6ATV-10*,WIDE1:!3720.50N/12154.30W["); expect(std::string(path) == "K6ATV-10*,WIDE1" && std::string(via) == "K6ATV-10", "repeated by K6ATV-10");
+    info("K6ATV-6>APZPGR,K6ATV-10*,K6ATV-3*:!x"); expect(std::string(via) == "K6ATV-3", "the last used hop is reported");
+    info("K6ATV-6>APZPGR:!x"); expect(path[0] == 0 && via[0] == 0, "no path at all");
+    info("K6ATV-6>APZPGR,WIDE1-1:!3720:50"); expect(std::string(path) == "WIDE1-1", "colons in the info do not end the path early");
+    info("no header here"); expect(path[0] == 0 && via[0] == 0, "garbage gives empty strings"); }
+
   // NMEA
   NmeaParser n; bool upd = false;
   for (char c : nmeaLine("GNGGA,123519.00,3720.5000,N,12154.3000,W,1,09,0.9,50.0,M,-30.0,M,,")) upd |= n.feed(c);

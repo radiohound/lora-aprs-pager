@@ -50,10 +50,13 @@ static BeaconScheduler beacon;
 static unsigned long txCount = 0;
 
 // ---- Stations heard (positions only for now) ----
-struct Station { char call[10]; double lat, lon; char table, sym; uint32_t heard; float rssi, snr; bool used; };
+struct Station { char call[10]; double lat, lon; char table, sym; uint32_t heard, first; float rssi, snr; bool used;
+                 uint16_t count; char raw[121], path[40], via[10], comment[44]; };   // raw = the last packet as text; via = the digipeater that repeated it ("" = heard directly)
 static Station stations[48];
+static char lastHeardCall[10] = "";                 // the station heard most recently, and when (the full list lights it up)
+static uint32_t lastHeardAt = 0, lastKnobAt = 0;      // lastKnobAt: when the knob last moved in the full list (it stops following new packets for a while)
 static int stationCount() { int n = 0; for (auto &s : stations) if (s.used) n++; return n; }
-static void stationUpdate(const AprsPos &p, float rssi, float snr) {
+static void stationUpdate(const AprsPos &p, float rssi, float snr, const char *rawText, size_t rawLen) {
   Station *slot = nullptr, *oldest = nullptr;
   for (auto &s : stations) {
     if (s.used && strcmp(s.call, p.call) == 0) { slot = &s; break; }
@@ -61,9 +64,18 @@ static void stationUpdate(const AprsPos &p, float rssi, float snr) {
     if (s.used && (!oldest || s.heard < oldest->heard)) oldest = &s;
   }
   if (!slot) slot = oldest;
+  bool same = slot->used && strcmp(slot->call, p.call) == 0;
+  if (!same) { slot->count = 0; slot->first = millis(); }
+  if (slot->count < 65535) slot->count++;
   strncpy(slot->call, p.call, 9); slot->call[9] = 0;
   slot->lat = p.lat; slot->lon = p.lon; slot->table = p.table; slot->sym = p.sym;
   slot->heard = millis(); slot->rssi = rssi; slot->snr = snr; slot->used = true;
+  strncpy(slot->comment, p.comment, sizeof slot->comment - 1); slot->comment[sizeof slot->comment - 1] = 0;
+  size_t k = std::min(rawLen, sizeof slot->raw - 1);
+  for (size_t i = 0; i < k; i++) slot->raw[i] = (rawText[i] >= 32 && rawText[i] < 127) ? rawText[i] : '.';
+  slot->raw[k] = 0;
+  aprsPathInfo(rawText, rawLen, slot->path, sizeof slot->path, slot->via, sizeof slot->via);
+  strncpy(lastHeardCall, p.call, 9); lastHeardCall[9] = 0; lastHeardAt = millis();
 }
 
 // ---- GPS ----
@@ -83,12 +95,20 @@ static double clat = 37.45, clon = -122.15;          // map centre (middle of th
 enum Mode { M_ZOOM, M_PANX, M_PANY, M_LIST };
 static Mode mode = M_PANX;
 static const char *MODE_NAME[] = {"ZOOM", "PAN W-E", "PAN N-S", "STATIONS"};
-// Station view, stepped by the L key: 0 = list + markers, 1 = markers only (full-width map), 2 = clean map (no stations)
+// Station view, stepped by the L key: 0 = list + markers, 1 = markers only (full-width map), 2 = clean map (no stations), 3 = full list (no map)
 static int stView = 0;
 static bool sortByDistance = true;          // S key: nearest first, or most recently heard first
 static char selCall[10] = "";               // selected station (kept by call sign so it survives re-sorting)
 static const int LIST_W = 130;
-static const char *VIEW_NAME[] = {"stations: list + map", "stations: map only", "stations: hidden"};
+// The four views of the L key, named: shown as a pop-up when you switch and permanently in the top line.
+//   LIST+MAP      list of heard stations on the left, map on the right, station icons on the map
+//   MAP+STATIONS  the map full width, station icons and call signs on it (no list)
+//   MAP ONLY      the map full width with NO stations at all (only you): for reading the map itself
+//   FULL LIST     no map: every heard station with its details and packet text
+static const uint32_t FOLLOW_PAUSE_MS = 20000;   // after you turn the knob in the full list it stays where you put it this long
+static const uint32_t FRESH_MS = 8000;            // a station heard this recently is lit up in the full list
+static const char *VIEW_TAG[] = {"LIST+MAP", "MAP+STATIONS", "MAP ONLY", "FULL LIST"};
+static const char *VIEW_NAME[] = {"View: LIST + MAP", "View: MAP + STATIONS (no list)", "View: MAP ONLY (no stations)", "View: FULL LIST (no map)"};
 static Mode nextMode(Mode m) {
   static const Mode cycle[] = {M_PANX, M_PANY, M_ZOOM, M_LIST};
   int i = 0; for (int k = 0; k < 4; k++) if (cycle[k] == m) i = k;
@@ -278,6 +298,78 @@ static void drawListPanel(lgfx::LovyanGFX &D, int H) {
   }
 }
 
+// Full-screen list of the heard stations (view 3, no map): a list on the left and everything known about the selected station on the right,
+// including how its last packet reached us and the packet text itself.
+static void drawFullList(lgfx::LovyanGFX &D, int W, int H) {
+  D.fillScreen(TFT_BLACK);
+  const int LW = 196, rowH = 26, top = 14, rows = (H - top - 12) / rowH;
+  D.fillRect(0, 0, W, 13, C_BAR); D.setTextSize(1); D.setTextColor(TFT_CYAN); D.setCursor(4, 3);
+  D.printf("FULL LIST   %d heard   %s first", nOrd, (sortByDistance && gps.fix.valid) ? "nearest" : "most recent");
+  bool follow = lastKnobAt == 0 || millis() - lastKnobAt > FOLLOW_PAUSE_MS;
+  const char *ft = follow ? "FOLLOWING NEW PACKETS" : "HOLDING (knob in use)";
+  D.setTextColor(follow ? TFT_GREEN : TFT_YELLOW); D.setCursor(W - 6 * (int)strlen(ft) - 4, 3); D.print(ft);
+  D.drawFastVLine(LW, top, H - top - 12, TFT_DARKGREY);
+  int sel = selIndex(), first = constrain(sel - rows / 2, 0, std::max(0, nOrd - rows));
+  if (nOrd == 0) { D.setTextColor(C_GRAY); D.setCursor(10, 60); D.print("No stations heard yet."); }
+  for (int r = 0; r < rows && first + r < nOrd; r++) {
+    const Station &st = stations[order[first + r]]; bool isSel = first + r == sel; int y = top + r * rowH;
+    unsigned long age = (millis() - st.heard) / 1000;
+    bool fresh = !strcmp(st.call, lastHeardCall) && millis() - lastHeardAt < FRESH_MS;                // heard a moment ago: lit up in green
+    uint16_t bg = fresh ? 0x0460 : (isSel ? C_SEL : TFT_BLACK), fg = fresh ? TFT_WHITE : (isSel ? TFT_YELLOW : (age > 3600 ? C_GRAY : TFT_WHITE));
+    D.fillRect(0, y, LW, rowH, bg);
+    if (!drawSymbol(D, 14, y + 13, st.table, st.sym)) D.fillCircle(14, y + 13, 4, TFT_YELLOW);
+    D.setTextSize(2); D.setTextColor(fg); D.setCursor(30, y + 1); D.print(st.call);
+    char as[8]; geoFmtAge(as, sizeof as, age); if (fresh) strcpy(as, "NEW"); D.setTextSize(1); D.setTextColor(fresh ? TFT_GREEN : C_GRAY); D.setCursor(LW - 6 * (int)strlen(as) - 4, y + 4); D.print(as);
+    if (isSel) D.drawRect(0, y, LW, rowH, TFT_YELLOW);                                                // the selected row keeps a yellow frame even when lit green
+    char info[40] = "";
+    if (gps.fix.valid) { char ds[10]; geoFmtDist(ds, sizeof ds, sdist[order[first + r]]); double b = geoBearing(gps.fix.lat, gps.fix.lon, st.lat, st.lon); snprintf(info, sizeof info, "%s %s  ", ds, geoCompass(b)); }
+    D.setTextColor(st.via[0] ? TFT_YELLOW : TFT_GREEN); D.setCursor(30, y + 17);
+    D.print(info); D.print(st.via[0] ? "digipeated" : "direct");
+  }
+  // detail of the selected station
+  const int X = LW + 8; int y = 18;
+  if (nOrd) {
+    const Station &st = stations[order[sel]];
+    if (!drawSymbol(D, X + 12, y + 9, st.table, st.sym)) D.fillCircle(X + 12, y + 9, 4, TFT_YELLOW);
+    D.setTextSize(2); D.setTextColor(TFT_YELLOW); D.setCursor(X + 30, y + 2); D.print(st.call);
+    if (!strcmp(st.call, lastHeardCall) && millis() - lastHeardAt < FRESH_MS) { D.setTextSize(1); D.setTextColor(TFT_GREEN); D.setCursor(X + 30 + 12 * (int)strlen(st.call) + 8, y + 9); D.print("JUST HEARD"); D.setTextSize(2); }
+    y += 30; D.setTextSize(1);
+    char a1[8], a2[8]; geoFmtAge(a1, sizeof a1, (millis() - st.heard) / 1000); geoFmtAge(a2, sizeof a2, (millis() - st.first) / 1000);
+    D.setTextColor(TFT_WHITE); D.setCursor(X, y); D.printf("Heard %s ago   packet %u   first %s ago", a1, (unsigned)st.count, a2); y += 11;
+    D.setCursor(X, y);
+    if (st.via[0]) { D.setTextColor(TFT_YELLOW); D.printf("Digipeated by %s", st.via); } else { D.setTextColor(TFT_GREEN); D.print("Heard directly from the sender"); }
+    y += 11; D.setTextColor(TFT_WHITE); D.setCursor(X, y); D.printf("Path: %s", st.path[0] ? st.path : "(none)"); y += 11;
+    D.setCursor(X, y); D.printf("RSSI %.0f dBm    SNR %+.1f dB", st.rssi, st.snr); y += 11;
+    D.setCursor(X, y); D.printf("Position %.4f %.4f", st.lat, st.lon); y += 11;
+    if (gps.fix.valid) { double b = geoBearing(gps.fix.lat, gps.fix.lon, st.lat, st.lon); char ds[10]; geoFmtDist(ds, sizeof ds, sdist[order[sel]]);
+                         D.setCursor(X, y); D.printf("%s from you, %.0f deg %s", ds, b, geoCompass(b)); y += 11; }
+    D.setCursor(X, y); D.printf("Symbol  table %c  code %c", st.table, st.sym); y += 11;
+    if (st.comment[0]) { std::vector<std::string> w; wrapInto(w, std::string("Comment: ") + st.comment, 46); for (size_t i = 0; i < w.size() && i < 2; i++) { D.setCursor(X, y); D.print(w[i].c_str()); y += 11; } }
+    y += 3; D.setTextColor(C_GRAY); D.setCursor(X, y); D.print("Packet:"); y += 11; D.setTextColor(0xC618);
+    std::vector<std::string> raw; wrapInto(raw, st.raw, 46);
+    for (size_t i = 0; i < raw.size() && y <= H - 22; i++) { D.setCursor(X, y); D.print(raw[i].c_str()); y += 10; }
+  }
+  D.fillRect(0, H - 12, W, 12, C_BAR); D.setTextSize(1); D.setCursor(4, H - 10);
+  if (notice && millis() < noticeUntil) { D.setTextColor(TFT_GREEN); D.print(notice); }
+  else { D.setTextColor(C_GRAY); D.print("turn: select  press: message  hold: show on map  S: sort  L: next view"); }
+}
+
+// ---- Main menu (Backspace on the map): knob turn = move, press = choose, long press or Backspace = close ----
+enum MenuAct { MA_NONE, MA_MESSAGES, MA_SETUP, MA_BEACON, MA_AUTO, MA_POWEROFF_ASK, MA_POWEROFF_YES, MA_NO, MA_CLOSE };
+struct MainMenu { bool on = false; int sel = 0, n = 0; char label[7][32]; MenuAct act[7]; char title[34] = "Menu"; };
+static MainMenu mainMenu;
+static void mmAdd(const char *t, MenuAct a) { if (mainMenu.n < 7) { strncpy(mainMenu.label[mainMenu.n], t, 31); mainMenu.label[mainMenu.n][31] = 0; mainMenu.act[mainMenu.n++] = a; } }
+static void drawMainMenu(lgfx::LovyanGFX &D) {
+  int h = 26 + mainMenu.n * 18, w = 260, x = (480 - w) / 2, y = (222 - h) / 2;
+  D.fillRect(x - 2, y - 2, w + 4, h + 4, TFT_WHITE); D.fillRect(x, y, w, h, TFT_BLACK);
+  D.setTextSize(1); D.setTextColor(TFT_CYAN); D.setCursor(x + 8, y + 7); D.print(mainMenu.title);
+  for (int i = 0; i < mainMenu.n; i++) {
+    int yy = y + 22 + i * 18; bool sel = i == mainMenu.sel;
+    D.fillRect(x + 2, yy, w - 4, 16, sel ? TFT_YELLOW : TFT_BLACK);
+    D.setTextColor(sel ? TFT_BLACK : TFT_WHITE); D.setCursor(x + 10, yy + 4); D.print(mainMenu.label[i]);
+  }
+}
+
 static void render() {
   uint32_t t0 = millis(); misses = 0;
   lgfx::LovyanGFX &D = fbOk ? (lgfx::LovyanGFX &)fb : (lgfx::LovyanGFX &)tft;   // draw off-screen, then send in one go
@@ -288,6 +380,7 @@ static void render() {
   if (stView != 2 && nOrd && (selCall[0] == 0 || strcmp(stations[order[selIndex()]].call, selCall) != 0)) {
     strncpy(selCall, stations[order[0]].call, 9); selCall[9] = 0;     // nothing selected yet: take the first
   }
+  if (stView == 3) { drawFullList(D, W, H); if (mainMenu.on) drawMainMenu(D); if (fbOk) fb.pushSprite(0, 0); return; }    // full list: no map at all
   double cx, cy; toPx(clat, clon, z, cx, cy);
   double ox = cx - xc, oy = cy - H / 2.0;
   int tx0 = (int)floor((ox + x0) / 256.0), tx1 = (int)floor((ox + W - 1) / 256.0);
@@ -381,10 +474,11 @@ static void render() {
     char tx[16] = "TX off";
     if (autoBeacon) { if (beacon.hasSent()) { char a[8]; geoFmtAge(a, sizeof a, beacon.lastSentAgeMs(millis()) / 1000); snprintf(tx, sizeof tx, "TX auto %s", a); } else snprintf(tx, sizeof tx, "TX auto"); }
     char um[12] = ""; if (M.unreadTotal()) snprintf(um, sizeof um, " MSG %d", M.unreadTotal());
-    D.printf(" z%d %s %lums GPS %s %s%s ", z, MODE_NAME[mode], (unsigned long)tTiles, gps.fix.valid ? "fix" : "none", tx, um);
+    D.printf(" %s z%d %s %lums GPS %s %s%s ", VIEW_TAG[stView], z, MODE_NAME[mode], (unsigned long)tTiles, gps.fix.valid ? "fix" : "none", tx, um);
   }
   D.setCursor(x0 + 2, H - 10);
   D.printf(" %.4f %.4f ", clat, clon);
+  if (mainMenu.on) drawMainMenu(D);
   if (fbOk) fb.pushSprite(0, 0);
 }
 
@@ -615,6 +709,55 @@ static bool sendBeacon() {
   return true;
 }
 
+// ---- Power off: the charger chip (BQ25896, I2C 0x6B) can disconnect the battery ("ship mode": register 09, bit 5, BATFET_DIS), which cuts all power.
+// It does not work while USB is connected (the chip's own rule), and the pager comes back with the POWER button or by plugging in USB.
+static int bqRead(uint8_t reg) {
+  Wire.beginTransmission(ADDR_BQ25896); Wire.write(reg); if (Wire.endTransmission(false) != 0) return -1;
+  Wire.requestFrom((uint8_t)ADDR_BQ25896, (uint8_t)1); return Wire.available() ? Wire.read() : -1;
+}
+static bool bqWrite(uint8_t reg, uint8_t v) { Wire.beginTransmission(ADDR_BQ25896); Wire.write(reg); Wire.write(v); return Wire.endTransmission() == 0; }
+static bool usbPresent() {                              // register 0B bits 7..5: 0 = no input, 1..6 = a USB or adapter input, 7 = on-the-go (we supply)
+  int v = bqRead(0x0B); if (v < 0) return true;         // cannot tell: act as if USB is there and refuse
+  int st = (v >> 5) & 7; return st >= 1 && st <= 6;
+}
+static void powerOff() {
+  if (usbPresent()) { say("Unplug USB first, then power off"); haptic.play(H_ERROR); return; }
+  autoBeacon = false;                                   // tidy up first: nothing on the air, messages saved
+  if (M.changed) { msgSave(); M.changed = false; }
+  if (radioOk) radio->sleep();
+  lgfx::LovyanGFX &D = fbOk ? (lgfx::LovyanGFX &)fb : (lgfx::LovyanGFX &)tft;
+  D.fillScreen(TFT_BLACK); D.setTextSize(2); D.setTextColor(TFT_WHITE); D.setCursor(150, 98); D.print("Powering off...");
+  if (fbOk) fb.pushSprite(0, 0);
+  haptic.play(H_CLICK); delay(700);
+  int v = bqRead(0x09);
+  if (v >= 0) bqWrite(0x09, (uint8_t)(v | 0x20));      // battery path off: the pager loses power here
+  delay(1500);
+  if (v >= 0) bqWrite(0x09, (uint8_t)(v & ~0x20));     // still running: it did not work; put the battery path back
+  if (radioOk) radio->startReceive();
+  say("Power off did not work"); haptic.play(H_ERROR); dirty = true;
+}
+static void openMainMenu() {
+  mainMenu.n = 0; mainMenu.sel = 0; mainMenu.on = true; strcpy(mainMenu.title, "Menu");
+  mmAdd("Messages", MA_MESSAGES); mmAdd("Phone setup", MA_SETUP); mmAdd("Beacon now", MA_BEACON);
+  mmAdd(autoBeacon ? "Auto-beacon is ON: turn off" : "Auto-beacon is OFF: turn on", MA_AUTO);
+  mmAdd("Power off", MA_POWEROFF_ASK); mmAdd("Close menu", MA_CLOSE);
+  dirty = true;
+}
+static void mainMenuAct(MenuAct a) {
+  mainMenu.on = false; dirty = true;
+  switch (a) {
+    case MA_MESSAGES: ui.open(); break;
+    case MA_SETUP: startSetup(); drawSetup(); break;
+    case MA_BEACON: if (beacon.manualOk(millis())) sendBeacon(); else say("Wait: beacon just sent"); break;
+    case MA_AUTO: autoBeacon = !autoBeacon; if (autoBeacon) beacon.start(millis()); say(autoBeacon ? "Auto beacon ON" : "Auto beacon off"); break;
+    case MA_POWEROFF_ASK:
+      mainMenu.n = 0; mainMenu.sel = 0; mainMenu.on = true; strcpy(mainMenu.title, "Power off the pager?");
+      mmAdd("No, keep it on", MA_NO); mmAdd("Yes, power off", MA_POWEROFF_YES); break;      // No first: a stray press cannot switch it off
+    case MA_POWEROFF_YES: powerOff(); break;
+    default: break;
+  }
+}
+
 static void centerOnGps() {
   if (!gps.fix.valid) { haptic.play(H_ERROR); say("No GPS fix yet"); return; }
   clat = gps.fix.lat; clon = gps.fix.lon; haptic.play(H_CLICK); dirty = true;
@@ -651,7 +794,9 @@ void loop() {
         Serial.printf("rx rssi=%.0f snr=%.1f (%u bytes): %s\n", radio->getRSSI(), radio->getSNR(), (unsigned)f.length(), shown); }
       AprsPos pos;
       if (aprsParse((const unsigned char *)f.c_str(), f.length(), pos)) {
-        if (strcasecmp(pos.call, S.call) != 0) { stationUpdate(pos, radio->getRSSI(), radio->getSNR()); dirty = true; haptic.play(H_ACK); }   // our own beacon coming back from a digipeater is not a station
+        if (strcasecmp(pos.call, S.call) != 0) { stationUpdate(pos, radio->getRSSI(), radio->getSNR(), f.c_str() + ((uint8_t)f[0] == 0x3C ? 3 : 0), f.length() - ((uint8_t)f[0] == 0x3C ? 3 : 0));
+          // full list: show the station that was just heard (unless the knob was used recently)
+          if (stView == 3 && (lastKnobAt == 0 || millis() - lastKnobAt > FOLLOW_PAUSE_MS)) { strncpy(selCall, pos.call, 9); selCall[9] = 0; } dirty = true; haptic.play(H_ACK); }   // our own beacon coming back from a digipeater is not a station
       }
       else if (f.length() > 12 && (uint8_t)f[0] == 0x3C && (uint8_t)f[1] == 0xFF && (uint8_t)f[2] == 0x01) {
         msg::Parsed pm = msg::parse(f.c_str() + 3, f.length() - 3);
@@ -677,15 +822,20 @@ void loop() {
   if (uint8_t e = keys.poll()) {
     Serial.printf("key raw=%u %s char='%c' ui=%d\n", e & 0x7F, (e & 0x80) ? "down" : "up", keyLookup(e & 0x7F).ch ? keyLookup(e & 0x7F).ch : '?', (int)ui.scr);
     if (ui.active()) { ui.key(e & 0x7F, e & 0x80); if (!ui.active()) dirty = true; }
+    else if (mainMenu.on) {
+      if (e & 0x80) { if ((e & 0x7F) == KEY_ENTER) mainMenuAct(mainMenu.act[mainMenu.sel]); else if ((e & 0x7F) == KEY_BACKSPACE) { mainMenu.on = false; dirty = true; } }
+    }
     else if (e & 0x80) {
       char ch = keyLookup(e & 0x7F).ch;
-      if (ch == 'm') { ui.open(); haptic.play(H_CLICK); }
+      if ((e & 0x7F) == KEY_BACKSPACE) { haptic.play(H_CLICK); openMainMenu(); }
+      else if (ch == 'm') { ui.open(); haptic.play(H_CLICK); }
       else if (e == 0x80 + KEY_ENTER) { haptic.play(H_CLICK); startSetup(); drawSetup(); }
       else if (ch == 'p') sendScreenshot();
       else if (ch == 't') { autoBeacon = !autoBeacon; if (autoBeacon) beacon.start(millis()); haptic.play(H_CLICK); say(autoBeacon ? "Auto beacon ON" : "Auto beacon off"); }
       else if (ch == 'b') { if (beacon.manualOk(millis())) sendBeacon(); else say("Wait: beacon just sent"); }
       else if (ch == 'c') centerOnGps();
-      else if (ch == 'l') { stView = (stView + 1) % 3; if (stView != 0 && mode == M_LIST) mode = M_PANX; haptic.play(H_CLICK); say(VIEW_NAME[stView]); }
+      // L: next view; entering the full list starts on the latest station and follows new packets
+      else if (ch == 'l') { stView = (stView + 1) % 4; if (stView == 3) { lastKnobAt = 0; if (lastHeardCall[0]) { strncpy(selCall, lastHeardCall, 9); selCall[9] = 0; } } if (stView != 0 && mode == M_LIST) mode = M_PANX; haptic.play(H_CLICK); say(VIEW_NAME[stView]); }
       else if (ch == 's') { sortByDistance = !sortByDistance; haptic.play(H_TICK); say(sortByDistance ? "list: nearest first" : "list: most recent first"); }
     }
   }
@@ -694,15 +844,23 @@ void loop() {
   static bool wasPressed = false; static uint32_t pressedAt = 0; static bool longDone = false;
   bool pressed = digitalRead(PIN_ROT_PRESS) == LOW;
   if (pressed && !wasPressed) { pressedAt = millis(); longDone = false; }
-  if (pressed && !longDone && millis() - pressedAt >= 600) { longDone = true; if (ui.active()) { ui.press(true); haptic.play(H_CLICK); if (!ui.active()) dirty = true; } else centerOnGps(); }
-  if (!pressed && wasPressed && !longDone) { if (ui.active()) { ui.press(false); haptic.play(H_TICK); if (!ui.active()) dirty = true; } else { mode = nextMode(mode); haptic.play(H_TICK); dirty = true; } }
+  if (pressed && !longDone && millis() - pressedAt >= 600) { longDone = true; if (mainMenu.on) { mainMenu.on = false; dirty = true; haptic.play(H_CLICK); } else if (ui.active()) { ui.press(true); haptic.play(H_CLICK); if (!ui.active()) dirty = true; } else if (stView == 3) { stView = 0; haptic.play(H_CLICK); say(VIEW_NAME[0]); dirty = true; } else centerOnGps(); }
+  if (!pressed && wasPressed && !longDone) { if (mainMenu.on) { haptic.play(H_CLICK); mainMenuAct(mainMenu.act[mainMenu.sel]); } else if (ui.active()) { ui.press(false); haptic.play(H_TICK); if (!ui.active()) dirty = true; } else if (stView == 3) { haptic.play(H_CLICK); ui.open(); ui.openCompose(selCall); } else { mode = nextMode(mode); haptic.play(H_TICK); dirty = true; } }
   wasPressed = pressed;
 
   int32_t d; noInterrupts(); d = knobSteps; knobSteps = 0; interrupts();
-  if (d && ui.active()) { for (int i = 0, n = abs(d); i < n; i++) ui.knob(d > 0 ? 1 : -1); haptic.play(H_TICK); }
+  if (d && mainMenu.on) { mainMenu.sel = constrain(mainMenu.sel + (d > 0 ? -1 : 1), 0, mainMenu.n - 1); haptic.play(H_TICK); dirty = true; }
+  else if (d && ui.active()) { for (int i = 0, n = abs(d); i < n; i++) ui.knob(d > 0 ? 1 : -1); haptic.play(H_TICK); }
   else if (d) {
     haptic.play(H_TICK);
-    if (mode == M_ZOOM) {
+    if (stView == 3) {                               // full list: the knob moves the selection (up on the knob = up the list)
+      lastKnobAt = millis();                         // and stops it following new packets for a while
+      if (nOrd) {
+        int i = constrain(selIndex() + (d > 0 ? -1 : 1), 0, nOrd - 1);
+        const Station &st = stations[order[i]];
+        strncpy(selCall, st.call, 9); selCall[9] = 0; clat = st.lat; clon = st.lon;
+      }
+    } else if (mode == M_ZOOM) {
       int n = constrain(zi + (d > 0 ? 1 : -1), 0, NZ - 1);
       if (n != zi) zi = n;
     } else if (mode == M_LIST) {
@@ -748,7 +906,9 @@ void loop() {
 
   // keep the "age" column current: refresh every 15 s while the list is showing
   static uint32_t lastAge = 0;
-  if (stView == 0 && millis() - lastAge > 15000) { lastAge = millis(); dirty = true; }
+  if ((stView == 0 || stView == 3) && millis() - lastAge > 15000) { lastAge = millis(); dirty = true; }
+  static uint32_t lastFade = 0;
+  if (stView == 3 && millis() - lastHeardAt < FRESH_MS + 1500 && millis() - lastFade > 1000) { lastFade = millis(); dirty = true; }     // let the green highlight fade out
   // redraw at most every 300 ms (stations and GPS arrive in bursts)
   if (dirty && millis() - lastDraw > 300) { dirty = false; lastDraw = millis(); render(); }
   else if (notice && millis() > noticeUntil && !dirty) { notice = nullptr; dirty = true; }
