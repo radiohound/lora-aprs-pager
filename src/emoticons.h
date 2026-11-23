@@ -1,7 +1,6 @@
 // Default emoticon list: ASCII on the air, a graphic icon on the pager's screen.
 // Pure C++ (no Arduino dependency) so it can be unit-tested on a PC: see test/host/test_emoticons.cpp.
-// The ASCII is what is sent and stored; the icon is display only. Icon bitmaps are not drawn yet:
-// `icon` is just an index into the future icon table (same order as this list).
+// The ASCII is what is sent and stored; the icon is display only (src/emoji18.bin, made by tools/make_emoji.py from this list).
 #pragma once
 #include <stddef.h>
 #include <string.h>
@@ -47,4 +46,23 @@ static inline int emoticonMatch(const char *s, size_t n, size_t pos, size_t *len
   }
   if (best >= 0 && len) *len = bestLen;
   return best;
+}
+
+// Which picture goes with list entry k: the pictures are numbered in the order in which each distinct NAME first appears in the list
+// (so ":)" and ":-)" share picture 0). tools/make_emoji.py builds src/emoji18.bin in the same order from this file.
+static inline int emoticonIconIndex(int k) {
+  if (k < 0 || k >= (int)EMOTICON_COUNT) return -1;
+  int idx = 0;
+  for (int i = 0; i < (int)EMOTICON_COUNT; i++) {
+    if (!strcmp(EMOTICONS[i].name, EMOTICONS[k].name)) return idx;
+    bool first = true;
+    for (int j = 0; j < i; j++) if (!strcmp(EMOTICONS[j].name, EMOTICONS[i].name)) { first = false; break; }
+    if (first) idx++;
+  }
+  return -1;
+}
+static inline int emoticonIconCount() {
+  int n = 0;
+  for (int i = 0; i < (int)EMOTICON_COUNT; i++) { bool first = true; for (int j = 0; j < i; j++) if (!strcmp(EMOTICONS[j].name, EMOTICONS[i].name)) { first = false; break; } if (first) n++; }
+  return n;
 }

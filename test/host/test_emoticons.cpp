@@ -18,7 +18,17 @@ static void check(const std::string &t, std::vector<std::string> want) {
   auto got = scan(t);
   if (got != want) { fails++; printf("FAIL '%s': got %zu items", t.c_str(), got.size()); for (auto &g : got) printf(" [%s]", g.c_str()); printf("\n"); }
 }
+static void checkIcons() {
+  auto idx = [](const char *a) { size_t l; return emoticonIconIndex(emoticonMatch(a, strlen(a), 0, &l)); };
+  if (emoticonIconCount() != 24) { fails++; printf("FAIL: 24 distinct pictures expected, got %d\n", emoticonIconCount()); }
+  if (idx(":)") != 0 || idx(":-)") != 0) { fails++; printf("FAIL: :) and :-) share picture 0\n"); }
+  if (idx("<3") != 12 || idx("</3") != 13) { fails++; printf("FAIL: heart is picture 12, broken heart 13\n"); }
+  if (idx("8-)") != idx("B)")) { fails++; printf("FAIL: both cool faces share a picture\n"); }
+  if (idx(":3") != 23) { fails++; printf("FAIL: the last name has the last picture (23)\n"); }
+  if (emoticonIconIndex(-1) != -1 || emoticonIconIndex((int)EMOTICON_COUNT) != -1) { fails++; printf("FAIL: out of range gives -1\n"); }
+}
 int main() {
+  checkIcons();
   check("on my way :)", {"smile"});
   check(":) see you", {"smile"});
   check("ok :-) thanks!", {"smile"});

@@ -44,6 +44,14 @@ public:
     wr(0x02, 0xFF);   // clear interrupt flags
     return _ok = true;
   }
+  bool ok() const { return _ok; }
+  // Is the chip still set up the way begin() left it? A power glitch or a strong radio burst next to it can reset its registers, after
+  // which it keeps answering on I2C but reports no keys.
+  bool configured() {
+    if (!_ok) return false;
+    Wire.beginTransmission(ADDR_TCA8418); if (Wire.endTransmission() != 0) return false;
+    return (rd(0x01) & 0x11) == 0x11 && rd(0x1D) == 0x0F && rd(0x1E) == 0xFF && rd(0x1F) == 0x03;
+  }
   // Returns key event (bit7 = press, 0-6 = key number), or 0 when none waiting.
   uint8_t poll() {
     if (!_ok) return 0;

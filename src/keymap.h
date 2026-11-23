@@ -15,7 +15,7 @@ static constexpr uint8_t KEY_P = 97, KEY_ENTER = 98, KEY_BACKSPACE = 30;        
 
 static const char KEYMAP_BASE[4][10] = {
   {'q','w','e','r','t','y','u','i','o','p'},
-  {'a','s','d','f','g','h','j','k','l','\n'},
+  {'a','s','d','f','g','h','j','k','l',0},        // the Enter key arrives as raw 98 (and may also close matrix key 20): never a character
   {0,  'z','x','c','v','b','n','m',0,  0},
   {' ',0,0,0,0,0,0,0,0,0}
 };
@@ -29,8 +29,9 @@ static const char KEYMAP_SYMBOL[4][10] = {
 
 // raw: 1..40 from the TCA8418 (without the press bit). symbol: symbol layer active. shift: capital letters.
 inline KeyInfo keyLookup(uint8_t raw, bool symbol = false, bool shift = false) {
-  if (raw == KEY_P) return {shift ? 'P' : 'p', KM_NONE};
+  if (raw == KEY_P) return {symbol ? '0' : (shift ? 'P' : 'p'), KM_NONE};
   if (raw < 1 || raw > 40) { if (raw != KEY_ENTER) return {0, KM_NONE}; }
+  if (raw == 20) return {0, KM_NONE};            // matrix key 20 is the Enter key's second contact; Enter itself is raw 98
   switch (raw) {
     case KEY_ENTER:     return {'\n', KM_ENTER};
     case KEY_ALT:       return {0, KM_ALT};

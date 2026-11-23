@@ -3,3 +3,4 @@
 .DS_Store
 backups/
 !src/symbols24.bin
+!src/emoji18.bin

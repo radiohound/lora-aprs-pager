@@ -78,3 +78,10 @@ The pager may need DFU mode (hold BOOT while plugging USB). Restore with `write_
 - Whether the pager has touch (GT911 mentioned only in a search snippet).
 
 Build: `~/.platformio/penv/bin/pio run`.
+
+## Credits for pictures in the firmware (not covered by this project's own licence)
+- **APRS symbols**: the aprs.fi symbol set by Heikki Hannikainen, OH7LZB (https://github.com/hessu/aprs-symbols). Its licences are mixed (many
+  CC BY-SA 2.0 or public domain; the originals come from older APRS software): read its COPYRIGHT.md before making this repository public.
+  Built into `src/symbols24.bin` and `src/web/sym*.png` by `tools/make_symbols.py` and `tools/make_symbol_sheets.py`.
+- **Emoticon pictures**: Twemoji graphics, (c) Twitter, Inc and other contributors, CC-BY 4.0 (https://github.com/jdecked/twemoji, LICENSE-GRAPHICS).
+  Built into `src/emoji18.bin` by `tools/make_emoji.py`. What is sent on the air is always plain ASCII; the pictures are only drawn on the screen.

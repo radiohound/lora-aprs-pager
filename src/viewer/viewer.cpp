@@ -23,6 +23,8 @@
 #include <WebServer.h>
 #include <DNSServer.h>
 #include "webui.h"
+#include <LittleFS.h>
+#include "messaging.h"
 
 static XL9555 xp;
 static PagerDisplay tft;
@@ -155,23 +157,29 @@ static lgfx::LGFX_Sprite *getTile(int z, int x, int y) {
   return s;
 }
 
+static msg::Messenger M;                       // conversations, acks, retries (src/messaging.h)
+
 // ---- APRS symbols: 24x24 icons (the size the T-Deck uses) baked into the firmware (src/symbols24.bin, made by tools/make_symbols.py from the aprs.fi set) ----
 static const int ICON = 24;
 extern const uint8_t symbolsBin[] asm("_binary_src_symbols24_bin_start");
+extern const uint8_t emojiBin[] asm("_binary_src_emoji18_bin_start");      // 18 x 18 emoticon pictures (src/emoji18.bin)
 // Draw the symbol centred on (cx, cy), alpha-blended over what is already in the frame buffer. Table '/' = primary, '\\' = alternate,
 // and an overlay character (0-9, A-Z, or a-j in compressed packets for 0-9) = alternate symbol with that letter drawn on top (e.g. I& = iGate).
 // Returns false when the code has no icon or the icon would run off the screen.
-static void blendRec(uint16_t *px, const uint8_t *rec) {
-  const int n = ICON * ICON;
+static void blendRec(uint16_t *px, const uint8_t *rec, int n = ICON * ICON) {      // n = pixels in the icon (24 x 24 symbols, 18 x 18 emoticons)
+  // LovyanGFX reads and pushes uint16_t pixels BYTE-SWAPPED (swap565), while the icon files hold ordinary little-endian RGB565:
+  // so swap each frame-buffer word before blending and swap the result back.
+  auto sw = [](uint16_t v) { return (uint16_t)((v << 8) | (v >> 8)); };
   for (int k = 0; k < n; k++) {
     uint8_t a = rec[n * 2 + k];
     if (!a) continue;
-    uint16_t fg = rec[k * 2] | (rec[k * 2 + 1] << 8), bg = px[k];
-    if (a == 255) { px[k] = fg; continue; }
+    uint16_t fg = rec[k * 2] | (rec[k * 2 + 1] << 8);
+    if (a == 255) { px[k] = sw(fg); continue; }
+    uint16_t bg = sw(px[k]);
     int r = (((fg >> 11) & 31) * a + ((bg >> 11) & 31) * (255 - a)) / 255;
     int g = (((fg >> 5) & 63) * a + ((bg >> 5) & 63) * (255 - a)) / 255;
     int b = ((fg & 31) * a + (bg & 31) * (255 - a)) / 255;
-    px[k] = (r << 11) | (g << 5) | b;
+    px[k] = sw((uint16_t)((r << 11) | (g << 5) | b));
   }
 }
 static bool drawSymbol(lgfx::LovyanGFX &D, int cx, int cy, char table, char code) {
@@ -188,6 +196,23 @@ static bool drawSymbol(lgfx::LovyanGFX &D, int cx, int cy, char table, char code
   if (overlay) blendRec(px, symbolsBin + (2 * 94 + (ov - 33)) * recSize);
   D.pushImage(x0, y0, ICON, ICON, px);
   return true;
+}
+
+// ---- Messages screens (they use the stations table, drawSymbol(), haptic and M above) ----
+#include "emoticons.h"
+#include "msg_ui.h"
+static MsgUi ui;
+
+// Messages are kept in the pager's flash (LittleFS on the "spiffs" partition), never on the SD card.
+static void msgSave() {
+  std::string d = M.serialize(); File f = LittleFS.open("/msgs.bin", "w");
+  if (f) { f.write((const uint8_t *)d.data(), d.size()); f.close(); }
+}
+static void msgLoad() {
+  if (!LittleFS.begin(true, "/lfs", 10, "spiffs")) return;
+  File f = LittleFS.open("/msgs.bin", "r"); if (!f) return;
+  size_t n = f.size(); std::string d(n, 0); if (f.read((uint8_t *)&d[0], n) == n) M.deserialize((const uint8_t *)d.data(), n);
+  f.close();
 }
 
 // ---- station list: sorted view of the heard stations ----
@@ -293,7 +318,8 @@ static void render() {
   else {
     char tx[16] = "TX off";
     if (autoBeacon) { if (beacon.hasSent()) { char a[8]; geoFmtAge(a, sizeof a, beacon.lastSentAgeMs(millis()) / 1000); snprintf(tx, sizeof tx, "TX auto %s", a); } else snprintf(tx, sizeof tx, "TX auto"); }
-    D.printf(" z%d %s %lums GPS %s %s ", z, MODE_NAME[mode], (unsigned long)tTiles, gps.fix.valid ? "fix" : "none", tx);
+    char um[12] = ""; if (M.unreadTotal()) snprintf(um, sizeof um, " MSG %d", M.unreadTotal());
+    D.printf(" z%d %s %lums GPS %s %s%s ", z, MODE_NAME[mode], (unsigned long)tTiles, gps.fix.valid ? "fix" : "none", tx, um);
   }
   D.setCursor(x0 + 2, H - 10);
   D.printf(" %.4f %.4f ", clat, clon);
@@ -303,6 +329,7 @@ static void render() {
 void setup() {
   Serial.begin(115200); delay(500);
   S = loadSettings();
+  M.setCall(S.call); msgLoad(); M.restoreTimers(millis()); M.startIds(esp_random());
   Wire.begin(PIN_SDA, PIN_SCL, 400000);
   bool xpOk = xp.begin(ADDR_XL9555);
   if (xpOk) {
@@ -383,7 +410,7 @@ static PagerSettings loadSettings() {
 }
 static void applySettings() {
   tft.setBrightness(S.brightness);
-  haptic.enabled = S.haptic;
+  haptic.enabled = S.haptic; M.setCall(S.call);
   if (radioOk) radio->setOutputPower(S.txDbm);
   beacon.movingMs = (uint32_t)S.movingSec * 1000UL; beacon.stationaryMs = (uint32_t)S.stationaryMin * 60000UL; beacon.moveM = S.moveMetres;
 }
@@ -483,6 +510,31 @@ static void setupTick() {
   if (exitNow) { haptic.play(H_CLICK); stopSetup(); }
 }
 
+// Put one frame on the air after listening first (channel activity detection, up to 3 tries with a random wait).
+// Returns 0 = sent, 1 = channel busy (nothing sent), 2 = the radio failed. Blocks about 3 s at SF12.
+static int txFrame(const unsigned char *f, size_t len) {
+  bool free = false;
+  for (int tries = 0; tries < 3 && !free; tries++) {
+    int c = radio->scanChannel();
+    if (c == RADIOLIB_CHANNEL_FREE) free = true; else delay(300 + (esp_random() % 1200));
+  }
+  if (!free) { radio->startReceive(); return 1; }
+  int st = radio->transmit(f, len);
+  rxFlag = false;                                   // the TX-done interrupt shares the receive pin
+  radio->startReceive();
+  M.noteTx(millis());
+  return st == RADIOLIB_ERR_NONE ? 0 : 2;
+}
+// A message or ack from the engine: "CALL>TOCALL,PATH" + the engine's info part.
+static int txEngineItem(const msg::TxItem &it) {
+  std::string t = msg::tnc2(S.call, TOCALL, S.path, it.info);
+  unsigned char f[260]; if (t.size() + 3 > sizeof f) return 2;
+  f[0] = 0x3C; f[1] = 0xFF; f[2] = 0x01; memcpy(f + 3, t.data(), t.size());
+  int r = txFrame(f, t.size() + 3);
+  Serial.printf("tx %s (%u bytes): %s\n", r == 0 ? "sent" : (r == 1 ? "BUSY" : "FAILED"), (unsigned)(t.size() + 3), t.c_str());
+  return r;
+}
+
 // Send one position beacon now. Listens first (channel activity detection, up to 3 tries with a random wait) and gives up if the
 // channel stays busy. Returns true if it went out. Blocks about 3 s at SF12.
 static bool sendBeacon() {
@@ -492,17 +544,10 @@ static bool sendBeacon() {
   unsigned char f[200];
   size_t len = aprsBuildBeacon(f, sizeof f, S.call, TOCALL, S.path, gps.fix.lat, gps.fix.lon, S.table, S.sym, S.comment);
   if (!len) { say("Beacon too long"); return false; }
-  bool free = false;
-  for (int tries = 0; tries < 3 && !free; tries++) {
-    int c = radio->scanChannel();
-    if (c == RADIOLIB_CHANNEL_FREE) free = true; else delay(300 + (esp_random() % 1200));
-  }
-  if (!free) { radio->startReceive(); say("Channel busy: beacon skipped"); return false; }
-  say("Sending beacon..."); render();
-  int st = radio->transmit(f, len);
-  rxFlag = false;                                   // the TX-done interrupt shares the receive pin
-  radio->startReceive();
-  if (st != RADIOLIB_ERR_NONE) { say("TX failed"); haptic.play(H_ERROR); return false; }
+  say("Sending beacon..."); if (!ui.active()) render();
+  int r = txFrame(f, len);
+  if (r == 1) { say("Channel busy: beacon skipped"); return false; }
+  if (r != 0) { say("TX failed"); haptic.play(H_ERROR); return false; }
   txCount++; beacon.sent(millis(), gps.fix.lat, gps.fix.lon);
   haptic.play(H_MESSAGE); say("Beacon sent");
   return true;
@@ -528,7 +573,11 @@ void loop() {
   }
 
   // 'S' from the Mac = send a screenshot
-  while (Serial.available()) if (Serial.read() == 'S') sendScreenshot();
+  while (Serial.available()) {
+    int c = Serial.read();
+    if (c == 'S') sendScreenshot();
+    else if (c == 'M' && !ui.active() && !setupMode) { ui.open(); Serial.println("ui: opened by serial"); }   // test hook: open Messages from the Mac
+  }
 
   // received packets
   if (rxFlag && radioOk) {
@@ -536,19 +585,40 @@ void loop() {
     String f; int st = radio->readData(f);
     if (st == RADIOLIB_ERR_NONE) {
       rxCount++;
+      { char shown[200]; size_t n = std::min<size_t>(f.length(), sizeof shown - 1); for (size_t i = 0; i < n; i++) shown[i] = (f[i] >= 32 && f[i] < 127) ? f[i] : '.'; shown[n] = 0;
+        Serial.printf("rx rssi=%.0f snr=%.1f (%u bytes): %s\n", radio->getRSSI(), radio->getSNR(), (unsigned)f.length(), shown); }
       AprsPos pos;
-      if (aprsParse((const unsigned char *)f.c_str(), f.length(), pos)) { stationUpdate(pos, radio->getRSSI()); dirty = true; haptic.play(H_ACK); }
+      if (aprsParse((const unsigned char *)f.c_str(), f.length(), pos)) {
+        if (strcasecmp(pos.call, S.call) != 0) { stationUpdate(pos, radio->getRSSI()); dirty = true; haptic.play(H_ACK); }   // our own beacon coming back from a digipeater is not a station
+      }
+      else if (f.length() > 12 && (uint8_t)f[0] == 0x3C && (uint8_t)f[1] == 0xFF && (uint8_t)f[2] == 0x01) {
+        msg::Parsed pm = msg::parse(f.c_str() + 3, f.length() - 3);
+        msg::Event ev = M.onRx(pm, millis(), epochNow(), (int)radio->getRSSI());
+        if (ev == msg::EV_NEW) { haptic.play(H_MESSAGE); ui.onIncoming(pm.from); if (!ui.active()) { static char note[40]; snprintf(note, sizeof note, "Message from %s", pm.from); say(note); } dirty = true; }
+        else if (ev == msg::EV_ACKED) { haptic.play(H_ACK); ui.dirty = true; }
+        else if (ev == msg::EV_REJECTED) { haptic.play(H_ERROR); ui.dirty = true; }
+      }
     }
     radio->startReceive();
   }
 
   if (setupMode) { setupTick(); return; }   // while the phone setup screen is open, nothing else runs (receiving still does)
 
+  // the keyboard chip can lose its setup (a radio transmission right next to it, a power glitch): check once a second and set it up again
+  static uint32_t kbChecked = 0; static int kbResets = 0;
+  if (millis() - kbChecked > 1000) {
+    kbChecked = millis();
+    if (!keys.configured()) { bool ok = keys.begin(); kbResets++; Serial.printf("keyboard: setup was lost or the chip did not answer, set up again (%s), %d time(s)\n", ok ? "ok" : "no answer", kbResets); }
+  }
+
   // keyboard: C centres on my GPS position, L steps the station view (list + map / map only / hidden), S changes the list order
   if (uint8_t e = keys.poll()) {
-    if (e & 0x80) {
+    Serial.printf("key raw=%u %s char='%c' ui=%d\n", e & 0x7F, (e & 0x80) ? "down" : "up", keyLookup(e & 0x7F).ch ? keyLookup(e & 0x7F).ch : '?', (int)ui.scr);
+    if (ui.active()) { ui.key(e & 0x7F, e & 0x80); if (!ui.active()) dirty = true; }
+    else if (e & 0x80) {
       char ch = keyLookup(e & 0x7F).ch;
-      if (e == 0x80 + KEY_ENTER) { haptic.play(H_CLICK); startSetup(); drawSetup(); }
+      if (ch == 'm') { ui.open(); haptic.play(H_CLICK); }
+      else if (e == 0x80 + KEY_ENTER) { haptic.play(H_CLICK); startSetup(); drawSetup(); }
       else if (ch == 'p') sendScreenshot();
       else if (ch == 't') { autoBeacon = !autoBeacon; if (autoBeacon) beacon.start(millis()); haptic.play(H_CLICK); say(autoBeacon ? "Auto beacon ON" : "Auto beacon off"); }
       else if (ch == 'b') { if (beacon.manualOk(millis())) sendBeacon(); else say("Wait: beacon just sent"); }
@@ -562,12 +632,13 @@ void loop() {
   static bool wasPressed = false; static uint32_t pressedAt = 0; static bool longDone = false;
   bool pressed = digitalRead(PIN_ROT_PRESS) == LOW;
   if (pressed && !wasPressed) { pressedAt = millis(); longDone = false; }
-  if (pressed && !longDone && millis() - pressedAt >= 600) { longDone = true; centerOnGps(); }
-  if (!pressed && wasPressed && !longDone) { mode = nextMode(mode); haptic.play(H_TICK); dirty = true; }
+  if (pressed && !longDone && millis() - pressedAt >= 600) { longDone = true; if (ui.active()) { ui.press(true); haptic.play(H_CLICK); if (!ui.active()) dirty = true; } else centerOnGps(); }
+  if (!pressed && wasPressed && !longDone) { if (ui.active()) { ui.press(false); haptic.play(H_TICK); if (!ui.active()) dirty = true; } else { mode = nextMode(mode); haptic.play(H_TICK); dirty = true; } }
   wasPressed = pressed;
 
   int32_t d; noInterrupts(); d = knobSteps; knobSteps = 0; interrupts();
-  if (d) {
+  if (d && ui.active()) { for (int i = 0, n = abs(d); i < n; i++) ui.knob(d > 0 ? 1 : -1); haptic.play(H_TICK); }
+  else if (d) {
     haptic.play(H_TICK);
     if (mode == M_ZOOM) {
       int n = constrain(zi + (d > 0 ? 1 : -1), 0, NZ - 1);
@@ -589,6 +660,29 @@ void loop() {
   // auto beacon
   static uint32_t nextTry = 0;
   if (autoBeacon && (int32_t)(millis() - nextTry) >= 0 && beacon.due(millis(), gps.fix.valid, gps.fix.lat, gps.fix.lon)) { if (!sendBeacon()) nextTry = millis() + 10000; }
+
+  // messages and acks waiting to go out
+  if (radioOk && M.callOk()) {
+    msg::TxItem it;
+    if (M.nextTx(millis(), it)) {
+      if (!ui.active()) { say(it.isAck ? "Sending ack..." : "Sending message..."); render(); }
+      int r = txEngineItem(it); M.txDone(r == 0, millis());
+      if (r == 2) haptic.play(H_ERROR); else if (r == 0 && !it.isAck) haptic.play(H_TICK);
+      ui.dirty = true; dirty = true;
+    }
+  }
+  // save the messages a few seconds after the last change (flash, not the SD card)
+  static uint32_t chgAt = 0;
+  if (M.changed) { if (!chgAt) chgAt = millis(); if (millis() - chgAt > 3000) { msgSave(); M.changed = false; chgAt = 0; } }
+
+  // the messages screens replace the map while they are open
+  if (ui.active()) {
+    static uint32_t uiDrawn = 0;
+    if (ui.dirty || millis() - uiDrawn > 1000) {
+      uiDrawn = millis(); ui.draw(fbOk ? (lgfx::LovyanGFX &)fb : (lgfx::LovyanGFX &)tft); if (fbOk) fb.pushSprite(0, 0);
+    }
+    return;
+  }
 
   // keep the "age" column current: refresh every 15 s while the list is showing
   static uint32_t lastAge = 0;

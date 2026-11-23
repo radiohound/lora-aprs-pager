@@ -55,6 +55,10 @@ int main() {
   for (char c : l) bad.feed(c);
   expect(!bad.fix.valid, "bad checksum rejected");
   expect(n.lines == 2, "line count");
+  { NmeaParser r; for (char c : nmeaLine("GNRMC,123519.00,A,4807.038,N,01131.000,E,022.4,084.4,221126,003.1,W")) r.feed(c);
+    expect(r.fix.epoch == 1795350919UL, "RMC time: 22 Nov 2026 12:35:19 UTC (two-digit years are read as 20xx)");
+    NmeaParser v; for (char c : nmeaLine("GNRMC,123519.00,V,,,,,,,221126,,")) v.feed(c); expect(v.fix.epoch == 0, "RMC marked void gives no time");
+    expect(nmeaEpoch(2026, 11, 22, 0, 0, 0) == 1795305600UL, "epoch for 2026-11-22"); }
 
   // ---- beacon packet builder: what we send must parse back to what we meant ----
   {
