@@ -1,4 +1,4 @@
-# pager-tracker
+# lora-aprs-pager
 
 A LoRa APRS tracker, station map and messenger for the **LilyGO T-LoRa Pager (433 MHz)**, written from scratch.
 It listens on 433.775 MHz, draws the stations it hears on a map from your own SD card, beacons your position, and sends and receives
@@ -114,9 +114,9 @@ press RST alone to start the new firmware.
 **Flashing a release file instead of building** (see the Releases page). Put the pager in download mode first, then, with `esptool` installed:
 
     # first install (or to start clean): the complete image. This ERASES the saved settings (call sign and so on)
-    esptool.py --chip esp32s3 --port <PORT> write_flash 0x0 pager-tracker-v0.1.0-alpha.1-tlora-pager-sx1262.bin
+    esptool.py --chip esp32s3 --port <PORT> write_flash 0x0 lora-aprs-pager-v0.1.0-alpha.1-tlora-pager-sx1262.bin
     # update an already installed pager and keep its settings: only the application
-    esptool.py --chip esp32s3 --port <PORT> write_flash 0x10000 pager-tracker-v0.1.0-alpha.1-tlora-pager-sx1262-app-only.bin
+    esptool.py --chip esp32s3 --port <PORT> write_flash 0x10000 lora-aprs-pager-v0.1.0-alpha.1-tlora-pager-sx1262-app-only.bin
 
 First start: press Enter, join the pager's hotspot from your phone (scan the QR code), open `http://192.168.4.1` and save your call sign.
 Until then the pager listens and shows the map but will not transmit.
