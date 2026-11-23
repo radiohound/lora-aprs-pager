@@ -111,6 +111,13 @@ Restore with `write_flash 0x0 pager-factory-16MB.bin`. LilyGO also publishes fac
 `Xinyuan-LilyGO/LilyGoLib/firmware`. **To flash, the pager must be in download mode:** hold BOOT, tap RST, release BOOT. After flashing,
 press RST alone to start the new firmware.
 
+**Flashing a release file instead of building** (see the Releases page). Put the pager in download mode first, then, with `esptool` installed:
+
+    # first install (or to start clean): the complete image. This ERASES the saved settings (call sign and so on)
+    esptool.py --chip esp32s3 --port <PORT> write_flash 0x0 pager-tracker-v0.1.0-alpha.1-tlora-pager-sx1262.bin
+    # update an already installed pager and keep its settings: only the application
+    esptool.py --chip esp32s3 --port <PORT> write_flash 0x10000 pager-tracker-v0.1.0-alpha.1-tlora-pager-sx1262-app-only.bin
+
 First start: press Enter, join the pager's hotspot from your phone (scan the QR code), open `http://192.168.4.1` and save your call sign.
 Until then the pager listens and shows the map but will not transmit.
 
