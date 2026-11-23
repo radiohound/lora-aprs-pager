@@ -128,6 +128,13 @@ int main() {
     std::string air2 = tnc2("K6ATV-4", "APZPGR", "WIDE1-1", ack.info);
     expect(A.onRx(parse(air2.c_str(), air2.size()), 5000, 0, -50) == EV_ACKED && A.m[0].state == S_ACKED, "A sees the ack and settles the message"); }
 
+  // ---- signal strength is kept with a received message, and the saved-file layout did not change ----
+  { Messenger M = mk(); M.onRx(P("K6ATV-4>X::K6ATV-6  :sig{1"), 0, 0, -97, (int)lround(-12.5 * 4));
+    expect(M.m[0].rssi == -97 && M.m[0].snr4 == -50, "rssi and snr (quarter dB) stored");
+    M.onRx(P("K6ATV-4>X::K6ATV-6  :loud{2"), 0, 0, -40, 400); expect(M.m[1].snr4 == 127, "snr is clamped to the int8 range");
+    std::string s = M.serialize(); Messenger N = mk(); expect(N.deserialize((const uint8_t *)s.data(), s.size()) && N.m[0].snr4 == -50, "snr survives saving");
+    expect(sizeof(Msg) == 204, "Msg is still 204 bytes, so files saved by earlier builds still load"); }
+
   // ---- limits ----
   { Messenger M = mk(); for (int i = 0; i < 350; i++) M.onRx(P("K6ATV-4>X::K6ATV-6  :m" + std::to_string(i) + "{" + std::to_string(i % 99999 + 1)), i * 1000, 0, -90);
     expect(M.m.size() == MAX_MESSAGES, "history is capped at 300"); }

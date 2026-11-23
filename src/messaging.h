@@ -99,6 +99,7 @@ struct Msg {
   uint32_t seq = 0, epoch = 0, nextAt = 0;
   char peer[10] = {}, id[7] = {}, text[STORE_TEXT] = {};
   uint8_t state = S_RECEIVED, tries = 0; bool out = false, read = true;
+  int8_t snr4 = 0;                 // signal-to-noise ratio in quarter dB steps (0 = not known; fits in what was padding, so saved files stay readable)
   int16_t rssi = 0;
   bool open() const { return out && (state == S_QUEUED || state == S_WAIT); }
 };
@@ -115,7 +116,7 @@ public:
   bool callOk() const { return strcmp(call, "N0CALL") != 0 && validCall(call); }
 
   // ---- receiving ----
-  Event onRx(const Parsed &p, uint32_t now, uint32_t epoch, int rssi) {
+  Event onRx(const Parsed &p, uint32_t now, uint32_t epoch, int rssi, int snr4 = 0) {
     if (p.kind == K_NONE || p.kind == K_BULLETIN || upperStr(p.to) != call) return EV_NONE;
     bool plain = false;                                               // an "ack..." that is really just text
     if (p.kind == K_ACK || p.kind == K_REJ) {
@@ -141,7 +142,7 @@ public:
       for (auto &s : seen) if (!strcmp(s.from, p.from) && !s.id[0] && s.text == text && (uint32_t)(now - s.firstAt) < DUP_WINDOW_MS) return EV_DUP;
       seen.push_back({{}, {}, text, now, 0}); strcpy(seen.back().from, p.from);
     }
-    Msg x; x.seq = nextSeq++; x.out = false; x.read = false; x.state = S_RECEIVED; x.epoch = epoch; x.rssi = (int16_t)rssi;
+    Msg x; x.seq = nextSeq++; x.out = false; x.read = false; x.state = S_RECEIVED; x.epoch = epoch; x.rssi = (int16_t)rssi; x.snr4 = (int8_t)std::max(-127, std::min(127, snr4));
     strncpy(x.peer, p.from, 9); strncpy(x.id, p.id, 6); strncpy(x.text, text.c_str(), STORE_TEXT - 1);
     add(x); return EV_NEW;
   }

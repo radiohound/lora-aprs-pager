@@ -5,6 +5,7 @@
 #include <SPI.h>
 #include <SD.h>
 #include <vector>
+#include <algorithm>
 #include <math.h>
 #include "pins.h"
 #include "xl9555.h"
@@ -49,10 +50,10 @@ static BeaconScheduler beacon;
 static unsigned long txCount = 0;
 
 // ---- Stations heard (positions only for now) ----
-struct Station { char call[10]; double lat, lon; char table, sym; uint32_t heard; float rssi; bool used; };
+struct Station { char call[10]; double lat, lon; char table, sym; uint32_t heard; float rssi, snr; bool used; };
 static Station stations[48];
 static int stationCount() { int n = 0; for (auto &s : stations) if (s.used) n++; return n; }
-static void stationUpdate(const AprsPos &p, float rssi) {
+static void stationUpdate(const AprsPos &p, float rssi, float snr) {
   Station *slot = nullptr, *oldest = nullptr;
   for (auto &s : stations) {
     if (s.used && strcmp(s.call, p.call) == 0) { slot = &s; break; }
@@ -62,7 +63,7 @@ static void stationUpdate(const AprsPos &p, float rssi) {
   if (!slot) slot = oldest;
   strncpy(slot->call, p.call, 9); slot->call[9] = 0;
   slot->lat = p.lat; slot->lon = p.lon; slot->table = p.table; slot->sym = p.sym;
-  slot->heard = millis(); slot->rssi = rssi; slot->used = true;
+  slot->heard = millis(); slot->rssi = rssi; slot->snr = snr; slot->used = true;
 }
 
 // ---- GPS ----
@@ -198,6 +199,13 @@ static bool drawSymbol(lgfx::LovyanGFX &D, int cx, int cy, char table, char code
   return true;
 }
 
+// A label: text on a coloured box with the same padding on all four sides. The 6 x 8 font leaves a blank column at the right and a blank row at the
+// bottom of every character cell, so a box drawn exactly around the cells looks too big at the right and bottom; this one is 2 px clear of the ink all round.
+static void drawLabel(lgfx::LovyanGFX &D, int x, int y, const char *t, uint16_t fg, uint16_t bg) {
+  D.fillRect(x - 2, y - 2, 6 * (int)strlen(t) + 3, 11, bg);
+  D.setTextColor(fg); D.setCursor(x, y); D.print(t);                 // one colour argument: no background of its own
+}
+
 // ---- Messages screens (they use the stations table, drawSymbol(), haptic and M above) ----
 #include "emoticons.h"
 #include "msg_ui.h"
@@ -265,7 +273,7 @@ static void drawListPanel(lgfx::LovyanGFX &D, int H) {
                          D.printf("%3.0f %-2s  %-9s", b, geoCompass(b), ds); }
     else D.printf("no GPS: no distance ");
     char as[8]; geoFmtAge(as, sizeof as, (millis() - st.heard) / 1000);
-    D.setCursor(2, dy + 26); D.printf("rssi %.0f  heard %s", st.rssi, as);
+    D.setCursor(2, dy + 26); D.printf("rssi %.0f snr %+.1f", st.rssi, st.snr);
     D.setCursor(2, dy + 38); D.printf("%.4f %.4f", st.lat, st.lon);
   }
 }
@@ -290,23 +298,77 @@ static void render() {
     if (s) s->pushSprite(&D, dx, dy); else D.fillRect(dx, dy, 256, 256, 0x2104);   // dark grey = no tile here
   }
   uint32_t tTiles = millis() - t0;
-  // station markers: yellow dot + call sign label (not in the clean-map view)
+  // station markers (not in the clean-map view). Stations too close to show separately are fanned out around the middle of the group:
+  // each keeps a small dot at its true position with a thin line to its icon, and the labels are stacked so none covers another.
   D.setTextSize(1);
-  if (stView != 2) for (auto &st : stations) {
-    if (!st.used) continue;
-    double sx, sy; toPx(st.lat, st.lon, z, sx, sy);
-    int x = (int)(sx - ox), y = (int)(sy - oy);
-    if (x < x0 - 60 || x > W + 60 || y < -10 || y > H + 10) continue;
-    bool icon = drawSymbol(D, x, y, st.table, st.sym);
-    if (!icon) { D.fillCircle(x, y, 4, TFT_BLACK); D.fillCircle(x, y, 3, TFT_YELLOW); }      // no icon for this code: plain dot
-    D.setTextColor(TFT_BLACK, TFT_YELLOW); D.setCursor(x + (icon ? 14 : 6), y - 4); D.print(st.call);
-    if (strcmp(st.call, selCall) == 0) D.drawCircle(x, y, icon ? 15 : 8, TFT_WHITE);
-  }
-  // my own GPS position: blue dot with a white ring
+  // my own position (symbol with a ring, call sign in a blue label); it takes part in the fan-out so stations beside me ring around me
+  int mx = 0, my = 0; bool hasMe = false;
   if (gps.fix.valid) {
     double sx, sy; toPx(gps.fix.lat, gps.fix.lon, z, sx, sy);
-    int x = (int)(sx - ox), y = (int)(sy - oy);
-    if (x > x0 - 8 && x < W + 8 && y > -8 && y < H + 8) { D.fillCircle(x, y, 6, TFT_WHITE); D.fillCircle(x, y, 4, TFT_BLUE); }
+    mx = (int)(sx - ox); my = (int)(sy - oy);
+    hasMe = mx > x0 - 8 && mx < W + 8 && my > -8 && my < H + 8;
+  }
+  int lx[49], ly[49], lw[49], nl = 0;                          // label boxes placed so far (left, top, width; all 11 px high), mine first
+  int ownTx = 0, ownTy = 0;                                    // where my label's text starts
+  if (hasMe) { int w = 6 * (int)strlen(S.call); ownTx = mx + 18; if (ownTx + w + 2 > W) ownTx = mx - 18 - w - 1; ownTy = my - 4; lx[0] = ownTx - 2; ly[0] = ownTy - 2; lw[0] = w + 3; nl = 1; }
+  if (stView != 2) {
+    struct Mk { const Station *st; int x, y, ix, iy; };
+    Mk mk[48]; int nm = 0;
+    for (auto &st : stations) {
+      if (!st.used) continue;
+      double sx, sy; toPx(st.lat, st.lon, z, sx, sy);
+      int x = (int)(sx - ox), y = (int)(sy - oy);
+      if (x < x0 - 60 || x > W + 60 || y < -10 || y > H + 10) continue;
+      mk[nm++] = {&st, x, y, x, y};
+    }
+    std::sort(mk, mk + nm, [](const Mk &a, const Mk &b) { return strcmp(a.st->call, b.st->call) < 0; });   // stable order, so the fan does not shuffle
+    bool grouped[48] = {};
+    for (int i = 0; i < nm; i++) {
+      if (grouped[i]) continue;
+      int mem[48], n = 0;
+      for (int j = i; j < nm; j++) if (!grouped[j] && abs(mk[j].x - mk[i].x) < 26 && abs(mk[j].y - mk[i].y) < 26) { mem[n++] = j; grouped[j] = true; }
+      long cx = 0, cy = 0; for (int k = 0; k < n; k++) { cx += mk[mem[k]].x; cy += mk[mem[k]].y; } cx /= n; cy /= n;
+      bool withMe = hasMe && abs((int)cx - mx) < 28 && abs((int)cy - my) < 28;                                // my own icon is in this group
+      if (n < 2 && !withMe) continue;
+      if (withMe) { cx = mx; cy = my; }                                                                        // I stay in the middle, the others ring around me
+      float R = std::max(withMe ? 30.0f : 20.0f, 26.0f / (2.0f * sinf((float)M_PI / std::max(n, 2))) + 2.0f);   // far enough apart that 24 px icons do not touch
+      for (int k = 0; k < n; k++) {
+        float ang = -(float)M_PI / 2 + 2.0f * (float)M_PI * k / n;
+        mk[mem[k]].ix = constrain((int)(cx + R * cosf(ang)), x0 + 14, W - 14); mk[mem[k]].iy = constrain((int)(cy + R * sinf(ang)), 14, H - 14);
+      }
+    }
+    for (int i = 0; i < nm; i++) {                           // lines and true-position dots for the icons that were moved
+      if (mk[i].ix == mk[i].x && mk[i].iy == mk[i].y) continue;
+      D.drawLine(mk[i].x, mk[i].y, mk[i].ix, mk[i].iy, TFT_BLACK);
+      D.fillCircle(mk[i].x, mk[i].y, 3, TFT_BLACK); D.fillCircle(mk[i].x, mk[i].y, 2, TFT_YELLOW);
+    }
+    bool hasIcon[48];
+    for (int pass = 0; pass < 2; pass++) for (int i = 0; i < nm; i++) {                // the selected station is drawn last, on top
+      bool isSel = strcmp(mk[i].st->call, selCall) == 0;
+      if (isSel != (pass == 1)) continue;
+      bool icon = drawSymbol(D, mk[i].ix, mk[i].iy, mk[i].st->table, mk[i].st->sym);
+      hasIcon[i] = icon;
+      if (!icon) { D.fillCircle(mk[i].ix, mk[i].iy, 4, TFT_BLACK); D.fillCircle(mk[i].ix, mk[i].iy, 3, TFT_YELLOW); }      // no icon for this code: plain dot
+      if (isSel) D.drawCircle(mk[i].ix, mk[i].iy, icon ? 15 : 8, TFT_WHITE);
+    }
+    for (int i = 0; i < nm; i++) {
+      int w = 6 * (int)strlen(mk[i].st->call), off = hasIcon[i] ? 14 : 6, x = mk[i].ix + off, y = mk[i].iy - 4;   // x, y: where the text starts
+      if (x + w + 2 > W) x = mk[i].ix - off - w - 1;                                    // no room on the right: put it on the left
+      for (int tries = 0; tries < 8; tries++) {                                          // slide down until the box overlaps no other label
+        bool hit = false;
+        for (int k = 0; k < nl; k++) if (x - 2 < lx[k] + lw[k] && lx[k] < x - 2 + w + 3 && y - 2 < ly[k] + 11 && ly[k] < y - 2 + 11) { hit = true; break; }
+        if (!hit) break;
+        y += 11;
+      }
+      lx[nl] = x - 2; ly[nl] = y - 2; lw[nl] = w + 3; nl++;
+      drawLabel(D, x, y, mk[i].st->call, TFT_BLACK, TFT_YELLOW);
+    }
+  }
+  // my own marker: my symbol inside a blue ring (a blue dot when the symbol will not fit), and my call sign in a blue label
+  if (hasMe) {
+    D.drawCircle(mx, my, 15, TFT_WHITE); D.drawCircle(mx, my, 14, TFT_BLUE);
+    if (!drawSymbol(D, mx, my, S.table, S.sym)) { D.fillCircle(mx, my, 6, TFT_WHITE); D.fillCircle(mx, my, 4, TFT_BLUE); }
+    drawLabel(D, ownTx, ownTy, S.call, TFT_WHITE, TFT_BLUE);
   }
   // crosshair at the map centre
   D.drawFastHLine(xc - 6, H / 2, 13, TFT_RED); D.drawFastVLine(xc, H / 2 - 6, 13, TFT_RED);
@@ -589,11 +651,11 @@ void loop() {
         Serial.printf("rx rssi=%.0f snr=%.1f (%u bytes): %s\n", radio->getRSSI(), radio->getSNR(), (unsigned)f.length(), shown); }
       AprsPos pos;
       if (aprsParse((const unsigned char *)f.c_str(), f.length(), pos)) {
-        if (strcasecmp(pos.call, S.call) != 0) { stationUpdate(pos, radio->getRSSI()); dirty = true; haptic.play(H_ACK); }   // our own beacon coming back from a digipeater is not a station
+        if (strcasecmp(pos.call, S.call) != 0) { stationUpdate(pos, radio->getRSSI(), radio->getSNR()); dirty = true; haptic.play(H_ACK); }   // our own beacon coming back from a digipeater is not a station
       }
       else if (f.length() > 12 && (uint8_t)f[0] == 0x3C && (uint8_t)f[1] == 0xFF && (uint8_t)f[2] == 0x01) {
         msg::Parsed pm = msg::parse(f.c_str() + 3, f.length() - 3);
-        msg::Event ev = M.onRx(pm, millis(), epochNow(), (int)radio->getRSSI());
+        msg::Event ev = M.onRx(pm, millis(), epochNow(), (int)radio->getRSSI(), (int)lroundf(radio->getSNR() * 4.0f));
         if (ev == msg::EV_NEW) { haptic.play(H_MESSAGE); ui.onIncoming(pm.from); if (!ui.active()) { static char note[40]; snprintf(note, sizeof note, "Message from %s", pm.from); say(note); } dirty = true; }
         else if (ev == msg::EV_ACKED) { haptic.play(H_ACK); ui.dirty = true; }
         else if (ev == msg::EV_REJECTED) { haptic.play(H_ERROR); ui.dirty = true; }

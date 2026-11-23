@@ -279,7 +279,7 @@ struct MsgUi {
       for (auto &s : w) ln.push_back({s, x.out ? (uint16_t)TFT_GREEN : (uint16_t)TFT_WHITE, x.out, (int)i, false, 18});
       std::string meta;
       if (x.out) { meta = stateText(x, now); if (x.state == msg::S_QUEUED && heldBehind(th, i)) meta = "waiting for the earlier message"; }
-      else { std::string a = ageText(x.epoch); meta = a + (x.rssi ? (a.empty() ? "" : "  ") + std::to_string(x.rssi) + " dBm" : ""); }
+      else { std::string a = ageText(x.epoch), sig; if (x.rssi) { char b[40]; if (x.snr4) snprintf(b, sizeof b, "%d dBm  SNR %+.1f", x.rssi, x.snr4 / 4.0); else snprintf(b, sizeof b, "%d dBm", x.rssi); sig = b; } meta = a + (!a.empty() && !sig.empty() ? "  " : "") + sig; }
       ln.push_back({meta, x.out ? stateColor(x.state) : (uint16_t)0xC618, x.out, (int)i, true, 13});
       lastLine[i] = (int)ln.size() - 1;
     }
