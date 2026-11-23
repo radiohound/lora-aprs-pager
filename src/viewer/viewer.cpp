@@ -16,6 +16,13 @@
 #include "inputs.h"
 #include "keymap.h"
 #include "geo.h"
+#include "beacon.h"
+#include "settings_core.h"
+#include <Preferences.h>
+#include <WiFi.h>
+#include <WebServer.h>
+#include <DNSServer.h>
+#include "webui.h"
 
 static XL9555 xp;
 static PagerDisplay tft;
@@ -30,6 +37,14 @@ static volatile bool rxFlag = false;
 static void IRAM_ATTR onRx() { rxFlag = true; }
 static bool radioOk = false;
 static unsigned long rxCount = 0;
+
+// ---- My beacon (transmit). Auto-beaconing starts OFF at every boot; the T key switches it on, B sends one now. ----
+static const char *TOCALL = "APZPGR";          // experimental tocall (APZ...), pager tracker; to be replaced by a registered one
+static PagerSettings S;                         // call sign, path, symbol, power, intervals...: set on the phone setup page, kept in flash
+static PagerSettings loadSettings();           // defined further down
+static bool autoBeacon = false;
+static BeaconScheduler beacon;
+static unsigned long txCount = 0;
 
 // ---- Stations heard (positions only for now) ----
 struct Station { char call[10]; double lat, lon; char table, sym; uint32_t heard; float rssi; bool used; };
@@ -275,7 +290,11 @@ static void render() {
   D.setTextColor(TFT_WHITE, TFT_BLACK); D.setTextSize(1);
   D.setCursor(x0 + 2, 2);
   if (notice && millis() < noticeUntil) D.printf(" %s                         ", notice);
-  else D.printf(" z%d %s  %lums  GPS %s ", z, MODE_NAME[mode], (unsigned long)tTiles, gps.fix.valid ? "fix" : "none");
+  else {
+    char tx[16] = "TX off";
+    if (autoBeacon) { if (beacon.hasSent()) { char a[8]; geoFmtAge(a, sizeof a, beacon.lastSentAgeMs(millis()) / 1000); snprintf(tx, sizeof tx, "TX auto %s", a); } else snprintf(tx, sizeof tx, "TX auto"); }
+    D.printf(" z%d %s %lums GPS %s %s ", z, MODE_NAME[mode], (unsigned long)tTiles, gps.fix.valid ? "fix" : "none", tx);
+  }
   D.setCursor(x0 + 2, H - 10);
   D.printf(" %.4f %.4f ", clat, clon);
   if (fbOk) fb.pushSprite(0, 0);
@@ -283,6 +302,7 @@ static void render() {
 
 void setup() {
   Serial.begin(115200); delay(500);
+  S = loadSettings();
   Wire.begin(PIN_SDA, PIN_SCL, 400000);
   bool xpOk = xp.begin(ADDR_XL9555);
   if (xpOk) {
@@ -292,9 +312,9 @@ void setup() {
   }
   for (uint8_t p : {PIN_LORA_CS, PIN_LORA_RST, PIN_SD_CS, PIN_NFC_CS}) { pinMode(p, OUTPUT); digitalWrite(p, HIGH); }
   SPI.begin(PIN_SCK, PIN_MISO, PIN_MOSI);
-  tft.init(); tft.setRotation(PAGER_ROTATION); tft.setBrightness(160); tft.fillScreen(TFT_BLACK);
+  tft.init(); tft.setRotation(PAGER_ROTATION); tft.setBrightness(S.brightness); tft.fillScreen(TFT_BLACK);
   tft.setTextColor(TFT_GREEN, TFT_BLACK); tft.setTextSize(1);
-  if (xpOk) haptic.begin(xp);
+  if (xpOk) { haptic.begin(xp); haptic.enabled = S.haptic; }
   fb.setPsram(true); fb.setColorDepth(16); fbOk = fb.createSprite(tft.width(), tft.height()) != nullptr;
 
   buf = (uint8_t *)heap_caps_malloc(BUFSZ, MALLOC_CAP_SPIRAM);
@@ -317,11 +337,14 @@ void setup() {
   digitalWrite(PIN_LORA_RST, LOW); delay(10); digitalWrite(PIN_LORA_RST, HIGH); delay(50);
   radio = new SX1262(new Module(PIN_LORA_CS, PIN_LORA_IRQ, PIN_LORA_RST, PIN_LORA_BUSY, SPI));
   if (radio->begin(433.775, 125.0, 12, 5, 0x12, 10, 8, 3.0) == RADIOLIB_ERR_NONE) {
-    radio->setDio2AsRfSwitch(true); radio->setPacketReceivedAction(onRx); radio->startReceive(); radioOk = true;
+    radio->setDio2AsRfSwitch(true); radio->setCurrentLimit(140.0); radio->setOutputPower(S.txDbm);
+    radio->setPacketReceivedAction(onRx); radio->startReceive(); radioOk = true;
   }
 
   pinMode(PIN_ROT_A, INPUT_PULLUP); pinMode(PIN_ROT_B, INPUT_PULLUP); pinMode(PIN_ROT_PRESS, INPUT_PULLUP);
   kLast = (digitalRead(PIN_ROT_A) << 1) | digitalRead(PIN_ROT_B);
+  beacon.movingMs = (uint32_t)S.movingSec * 1000UL; beacon.stationaryMs = (uint32_t)S.stationaryMin * 60000UL; beacon.moveM = S.moveMetres;
+  if (S.autoAtBoot) { autoBeacon = true; beacon.start(millis()); }
   attachInterrupt(PIN_ROT_A, knobIsr, CHANGE); attachInterrupt(PIN_ROT_B, knobIsr, CHANGE);
   render();
 }
@@ -340,6 +363,149 @@ static void sendScreenshot() {
   }
   Serial.print("\nEND\n");
   haptic.play(H_TICK);
+}
+
+// ---- Settings kept in the pager's flash (NVS namespace "pgr-aprs"; not the SD card). Loaded values go through the same checks as the web form. ----
+static void saveSettings(const PagerSettings &x) {
+  Preferences p; p.begin("pgr-aprs", false);
+  char t[2] = {x.table, 0}, y[2] = {x.sym, 0};
+  p.putString("call", x.call); p.putString("path", x.path); p.putString("table", t); p.putString("sym", y); p.putString("comment", x.comment);
+  p.putString("txdbm", String(x.txDbm)); p.putString("moving", String(x.movingSec)); p.putString("stationary", String(x.stationaryMin));
+  p.putString("movem", String(x.moveMetres)); p.putString("auto", x.autoAtBoot ? "1" : "0"); p.putString("haptic", x.haptic ? "1" : "0");
+  p.putString("bright", String(x.brightness)); p.end();
+}
+static PagerSettings loadSettings() {
+  PagerSettings x; Preferences p; p.begin("pgr-aprs", true);
+  std::string err;
+  bool ok = settingsParse([&](const char *k, std::string &v) { if (!p.isKey(k)) return false; v = p.getString(k, "").c_str(); return true; }, x, err);
+  p.end();
+  return ok ? x : PagerSettings();            // nothing saved yet, or damaged: the defaults
+}
+static void applySettings() {
+  tft.setBrightness(S.brightness);
+  haptic.enabled = S.haptic;
+  if (radioOk) radio->setOutputPower(S.txDbm);
+  beacon.movingMs = (uint32_t)S.movingSec * 1000UL; beacon.stationaryMs = (uint32_t)S.stationaryMin * 60000UL; beacon.moveM = S.moveMetres;
+}
+
+// ---- Phone setup: the pager opens its own WiFi hotspot and serves the setup page (Enter key). Off again when you leave. ----
+static WebServer web(80);
+static DNSServer dns;     // answers every name with the pager's own address, so phones show the "sign in to network" prompt and open the page
+static bool setupMode = false;
+static char apSsid[16], apPass[10];
+static uint32_t savedAt = 0;
+// diagnostics shown on the setup screen: what the hotspot has seen so far
+static volatile int evJoined = 0, evLeft = 0, evIp = 0, evReq = 0;
+static char lastReq[28] = "";
+static void noteReq() { evReq++; strncpy(lastReq, web.uri().c_str(), sizeof lastReq - 1); lastReq[sizeof lastReq - 1] = 0; }
+extern const uint8_t sym0Start[] asm("_binary_src_web_sym0_png_start");
+extern const uint8_t sym0End[] asm("_binary_src_web_sym0_png_end");
+extern const uint8_t sym1Start[] asm("_binary_src_web_sym1_png_start");
+extern const uint8_t sym1End[] asm("_binary_src_web_sym1_png_end");
+static void webReply(int code, const char *type, const String &body) { web.sendHeader("Cache-Control", "no-store"); web.send(code, type, body); }
+static void handleSave() {
+  PagerSettings n; std::string err;
+  bool ok = settingsParse([&](const char *k, std::string &v) { if (!web.hasArg(k)) return false; v = web.arg(k).c_str(); return true; }, n, err);
+  if (!ok) { webReply(400, "application/json", String("{\"ok\":false,\"error\":\"") + settingsJsonEscape(err.c_str()).c_str() + "\"}"); return; }
+  S = n; saveSettings(S); applySettings(); savedAt = millis();
+  webReply(200, "application/json", "{\"ok\":true}");
+}
+static void startSetup() {
+  uint8_t mac[6]; WiFi.macAddress(mac);
+  snprintf(apSsid, sizeof apSsid, "Pager-%02X%02X", mac[4], mac[5]);
+  static const char alpha[] = "abcdefghjkmnpqrstuvwxyz23456789";             // no look-alike characters
+  for (int i = 0; i < 8; i++) apPass[i] = alpha[esp_random() % (sizeof alpha - 1)];
+  apPass[8] = 0;
+  evJoined = evLeft = evIp = evReq = 0; lastReq[0] = 0;
+  WiFi.onEvent([](WiFiEvent_t e) {
+    if (e == ARDUINO_EVENT_WIFI_AP_STACONNECTED) evJoined++;
+    else if (e == ARDUINO_EVENT_WIFI_AP_STADISCONNECTED) evLeft++;
+    else if (e == ARDUINO_EVENT_WIFI_AP_STAIPASSIGNED) evIp++;
+  });
+  WiFi.mode(WIFI_AP);
+  WiFi.softAPConfig(IPAddress(192, 168, 4, 1), IPAddress(192, 168, 4, 1), IPAddress(255, 255, 255, 0));
+  WiFi.softAP(apSsid, apPass);
+  WiFi.setSleep(false);                                    // WiFi power saving makes phones drop or stall on a soft AP
+  web.on("/", HTTP_GET, []() { noteReq(); web.sendHeader("Cache-Control", "no-store"); web.send_P(200, "text/html", SETUP_PAGE); });
+  web.on("/settings.json", HTTP_GET, []() { noteReq(); webReply(200, "application/json", settingsToJson(S).c_str()); });
+  web.on("/save", HTTP_POST, []() { noteReq(); handleSave(); });
+  web.on("/sym0.png", HTTP_GET, []() { noteReq(); web.send_P(200, "image/png", (const char *)sym0Start, sym0End - sym0Start); });
+  web.on("/sym1.png", HTTP_GET, []() { noteReq(); web.send_P(200, "image/png", (const char *)sym1Start, sym1End - sym1Start); });
+  web.onNotFound([]() { noteReq(); web.sendHeader("Location", "http://192.168.4.1/", true); web.send(302, "text/plain", ""); });   // phones probe a few fixed addresses: send them to the page
+  web.begin();
+  dns.start(53, "*", WiFi.softAPIP());
+  setupMode = true; savedAt = 0;
+}
+static void stopSetup() {
+  dns.stop(); web.stop(); WiFi.softAPdisconnect(true); WiFi.mode(WIFI_OFF);
+  setupMode = false; dirty = true;
+}
+static void drawSetup() {
+  lgfx::LovyanGFX &D = fbOk ? (lgfx::LovyanGFX &)fb : (lgfx::LovyanGFX &)tft;
+  D.fillScreen(TFT_BLACK);
+  char pay[64]; snprintf(pay, sizeof pay, "WIFI:T:WPA;S:%s;P:%s;;", apSsid, apPass);
+  D.fillRect(4, 4, 214, 214, TFT_WHITE); D.qrcode(pay, 12, 12, 198, 4);
+  int x = 228;
+  D.setTextColor(TFT_CYAN, TFT_BLACK); D.setTextSize(2); D.setCursor(x, 6); D.print("PHONE SETUP");
+  D.setTextSize(1); D.setTextColor(TFT_WHITE, TFT_BLACK);
+  D.setCursor(x, 32); D.print("1. Scan the QR code, or join the WiFi:");
+  D.setTextSize(2); D.setTextColor(TFT_YELLOW, TFT_BLACK);
+  D.setCursor(x, 46); D.print(apSsid);
+  D.setTextSize(1); D.setTextColor(TFT_WHITE, TFT_BLACK);
+  D.setCursor(x, 68); D.print("password:");
+  D.setTextSize(2); D.setTextColor(TFT_YELLOW, TFT_BLACK); D.setCursor(x, 80); D.print(apPass);
+  D.setTextSize(1); D.setTextColor(TFT_WHITE, TFT_BLACK);
+  D.setCursor(x, 108); D.print("2. Open this address in your phone's");
+  D.setCursor(x, 120); D.print("   browser:");
+  D.setTextSize(2); D.setTextColor(TFT_YELLOW, TFT_BLACK); D.setCursor(x, 134); D.print("192.168.4.1");
+  D.setTextSize(1); D.setTextColor(TFT_WHITE, TFT_BLACK);
+  D.setCursor(x, 160); D.printf("Phones connected: %d", WiFi.softAPgetStationNum());
+  D.setTextColor(TFT_DARKGREY, TFT_BLACK); D.setCursor(x, 172); D.printf("joined %d  left %d  IP given %d", evJoined, evLeft, evIp);
+  D.setCursor(x, 184); D.printf("pages served %d %s", evReq, lastReq);
+  if (savedAt && millis() - savedAt < 6000) { D.setTextColor(TFT_GREEN, TFT_BLACK); D.setCursor(x, 196); D.print("Settings saved"); }
+  D.setTextColor(TFT_DARKGREY, TFT_BLACK); D.setCursor(x, 206); D.print("Enter, Backspace or knob press: exit");
+  if (fbOk) fb.pushSprite(0, 0);
+}
+static void setupTick() {
+  dns.processNextRequest();
+  web.handleClient();
+  noInterrupts(); knobSteps = 0; interrupts();
+  static uint32_t lastDrawS = 0; static int lastClients = -1; static bool lastSaved = false; static bool wasPressed = false;
+  bool saved = savedAt && millis() - savedAt < 6000;
+  int clients = WiFi.softAPgetStationNum();
+  static int lastEv = -1; int evSum = evJoined + evLeft * 7 + evIp * 31 + evReq * 101;
+  if (millis() - lastDrawS > 1000 || clients != lastClients || saved != lastSaved || evSum != lastEv) { lastDrawS = millis(); lastClients = clients; lastSaved = saved; lastEv = evSum; drawSetup(); }
+  bool exitNow = false;
+  if (uint8_t e = keys.poll()) { if ((e & 0x80) && ((e & 0x7F) == KEY_ENTER || (e & 0x7F) == KEY_BACKSPACE)) exitNow = true; }
+  bool pressed = digitalRead(PIN_ROT_PRESS) == LOW;
+  if (pressed && !wasPressed) exitNow = true;
+  wasPressed = pressed;
+  if (exitNow) { haptic.play(H_CLICK); stopSetup(); }
+}
+
+// Send one position beacon now. Listens first (channel activity detection, up to 3 tries with a random wait) and gives up if the
+// channel stays busy. Returns true if it went out. Blocks about 3 s at SF12.
+static bool sendBeacon() {
+  if (!radioOk) { say("No radio"); return false; }
+  if (strcmp(S.call, "N0CALL") == 0) { say("Set your call sign: press Enter"); haptic.play(H_ERROR); return false; }
+  if (!gps.fix.valid) { say("No GPS fix: no beacon"); haptic.play(H_ERROR); return false; }
+  unsigned char f[200];
+  size_t len = aprsBuildBeacon(f, sizeof f, S.call, TOCALL, S.path, gps.fix.lat, gps.fix.lon, S.table, S.sym, S.comment);
+  if (!len) { say("Beacon too long"); return false; }
+  bool free = false;
+  for (int tries = 0; tries < 3 && !free; tries++) {
+    int c = radio->scanChannel();
+    if (c == RADIOLIB_CHANNEL_FREE) free = true; else delay(300 + (esp_random() % 1200));
+  }
+  if (!free) { radio->startReceive(); say("Channel busy: beacon skipped"); return false; }
+  say("Sending beacon..."); render();
+  int st = radio->transmit(f, len);
+  rxFlag = false;                                   // the TX-done interrupt shares the receive pin
+  radio->startReceive();
+  if (st != RADIOLIB_ERR_NONE) { say("TX failed"); haptic.play(H_ERROR); return false; }
+  txCount++; beacon.sent(millis(), gps.fix.lat, gps.fix.lon);
+  haptic.play(H_MESSAGE); say("Beacon sent");
+  return true;
 }
 
 static void centerOnGps() {
@@ -376,11 +542,16 @@ void loop() {
     radio->startReceive();
   }
 
+  if (setupMode) { setupTick(); return; }   // while the phone setup screen is open, nothing else runs (receiving still does)
+
   // keyboard: C centres on my GPS position, L steps the station view (list + map / map only / hidden), S changes the list order
   if (uint8_t e = keys.poll()) {
     if (e & 0x80) {
       char ch = keyLookup(e & 0x7F).ch;
-      if (ch == 'p') sendScreenshot();
+      if (e == 0x80 + KEY_ENTER) { haptic.play(H_CLICK); startSetup(); drawSetup(); }
+      else if (ch == 'p') sendScreenshot();
+      else if (ch == 't') { autoBeacon = !autoBeacon; if (autoBeacon) beacon.start(millis()); haptic.play(H_CLICK); say(autoBeacon ? "Auto beacon ON" : "Auto beacon off"); }
+      else if (ch == 'b') { if (beacon.manualOk(millis())) sendBeacon(); else say("Wait: beacon just sent"); }
       else if (ch == 'c') centerOnGps();
       else if (ch == 'l') { stView = (stView + 1) % 3; if (stView != 0 && mode == M_LIST) mode = M_PANX; haptic.play(H_CLICK); say(VIEW_NAME[stView]); }
       else if (ch == 's') { sortByDistance = !sortByDistance; haptic.play(H_TICK); say(sortByDistance ? "list: nearest first" : "list: most recent first"); }
@@ -415,6 +586,10 @@ void loop() {
     }
     dirty = true;
   }
+  // auto beacon
+  static uint32_t nextTry = 0;
+  if (autoBeacon && (int32_t)(millis() - nextTry) >= 0 && beacon.due(millis(), gps.fix.valid, gps.fix.lat, gps.fix.lon)) { if (!sendBeacon()) nextTry = millis() + 10000; }
+
   // keep the "age" column current: refresh every 15 s while the list is showing
   static uint32_t lastAge = 0;
   if (stView == 0 && millis() - lastAge > 15000) { lastAge = millis(); dirty = true; }

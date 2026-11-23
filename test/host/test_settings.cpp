@@ -1,0 +1,39 @@
+// Host tests for src/settings_core.h.  Run:  c++ -std=c++17 -I src test/host/test_settings.cpp -o /tmp/test_settings && /tmp/test_settings
+#include <cstdio>
+#include <map>
+#include "settings_core.h"
+static int fails = 0;
+static void expect(bool c, const char *w) { if (!c) { fails++; printf("FAIL: %s\n", w); } }
+using M = std::map<std::string, std::string>;
+static M good() { return {{"call","k6atv-6"},{"path","wide1-1"},{"table","/"},{"sym","["},{"comment","T-LoRa Pager"},{"txdbm","20"},{"moving","60"},{"stationary","10"},{"movem","150"},{"auto","0"},{"haptic","1"},{"bright","160"}}; }
+static bool parse(const M &m, PagerSettings &s, std::string &err) { return settingsParse([&](const char *k, std::string &v) { auto i = m.find(k); if (i == m.end()) return false; v = i->second; return true; }, s, err); }
+int main() {
+  PagerSettings s; std::string err;
+  expect(parse(good(), s, err), "good form parses");
+  expect(std::string(s.call) == "K6ATV-6" && std::string(s.path) == "WIDE1-1", "call and path are upper-cased");
+  expect(s.table == '/' && s.sym == '[' && s.txDbm == 20 && s.movingSec == 60 && s.stationaryMin == 10 && s.moveMetres == 150 && !s.autoAtBoot && s.haptic && s.brightness == 160, "values");
+  auto bad = [&](const char *field, const char *val, const char *what) { M m = good(); m[field] = val; PagerSettings t = s; t.txDbm = 7; std::string e; expect(!parse(m, t, e) && t.txDbm == 7 && !e.empty(), what); };
+  bad("call", "", "empty call refused"); bad("call", "K6", "short call refused"); bad("call", "ABCDEFG-1", "long call refused");
+  bad("call", "KKKKK", "call without digit refused"); bad("call", "12345", "call without letter refused"); bad("call", "K6ATV-16", "SSID 16 refused");
+  bad("call", "K6ATV-", "empty SSID refused"); bad("call", "K6 ATV", "space in call refused"); bad("call", "K6ATV-1x", "non-numeric SSID refused");
+  bad("path", "WIDE1-1,WIDE2-1,WIDE3-1,WIDE4-1", "four hops refused"); bad("path", "wide1/1", "slash in path refused"); bad("path", "WIDE1-1,", "trailing comma refused");
+  bad("path", "VERYLONGHOPNAME", "long hop refused");
+  bad("table", "", "empty table refused"); bad("table", "ab", "two-char table refused"); bad("table", "!", "bad table refused"); bad("sym", " ", "space symbol refused"); bad("sym", "\x7f", "DEL symbol refused");
+  bad("comment", "has|bar", "pipe refused"); bad("comment", "has~tilde", "tilde refused"); bad("comment", "line\nbreak", "newline refused");
+  bad("comment", "0123456789012345678901234567890123456789012345", "long comment refused");
+  bad("txdbm", "23", "23 dBm refused"); bad("txdbm", "1", "1 dBm refused"); bad("txdbm", "abc", "non-number refused"); bad("txdbm", "20x", "trailing junk refused"); bad("txdbm", "", "empty number refused");
+  bad("moving", "29", "moving too fast refused"); bad("moving", "3601", "moving too slow refused"); bad("stationary", "0", "0 min refused"); bad("stationary", "121", "121 min refused");
+  bad("movem", "19", "19 m refused"); bad("auto", "2", "auto 2 refused"); bad("bright", "9", "dark refused"); bad("bright", "256", "256 refused");
+  { M m = good(); m.erase("bright"); std::string e; PagerSettings t; expect(!parse(m, t, e) && e.find("bright") != std::string::npos, "missing field named in the error"); }
+  { M m = good(); m["table"] = "L"; m["sym"] = "&"; PagerSettings t; std::string e; expect(parse(m, t, e) && t.table == 'L' && t.sym == '&', "overlay symbol L& accepted"); }
+  { M m = good(); m["table"] = "\\"; m["sym"] = "&"; PagerSettings t; std::string e; expect(parse(m, t, e) && t.table == '\\', "alternate table accepted"); }
+  { M m = good(); m["comment"] = ""; m["path"] = ""; PagerSettings t; std::string e; expect(parse(m, t, e) && t.comment[0] == 0 && t.path[0] == 0, "empty comment and path are fine"); }
+  { M m = good(); m["comment"] = "  spaced  "; PagerSettings t; std::string e; expect(parse(m, t, e) && std::string(t.comment) == "spaced", "comment is trimmed"); }
+  // JSON round trip including characters that need escaping
+  { PagerSettings t; strcpy(t.comment, "say \"hi\" \\o/"); std::string j = settingsToJson(t);
+    expect(j.find("\"comment\":\"say \\\"hi\\\" \\\\o/\"") != std::string::npos, "JSON escapes quotes and backslashes");
+    t.table = '\\'; j = settingsToJson(t); expect(j.find("\"table\":\"\\\\\"") != std::string::npos, "JSON escapes a backslash table"); }
+  expect(std::string(PagerSettings().call) == "N0CALL", "default call is N0CALL");
+  printf(fails ? "%d FAILED\n" : "all passed\n", fails);
+  return fails != 0;
+}

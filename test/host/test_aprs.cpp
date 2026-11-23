@@ -4,6 +4,7 @@
 #include <string>
 #include "aprs.h"
 #include "nmea.h"
+#include "beacon.h"
 
 static int fails = 0;
 static void expect(bool c, const char *what) { if (!c) { fails++; printf("FAIL: %s\n", what); } }
@@ -55,6 +56,36 @@ int main() {
   expect(!bad.fix.valid, "bad checksum rejected");
   expect(n.lines == 2, "line count");
 
+  // ---- beacon packet builder: what we send must parse back to what we meant ----
+  {
+    unsigned char f[128];
+    size_t len = aprsBuildBeacon(f, sizeof f, "K6ATV-6", "APZPGR", "WIDE1-1", 37.3417, -121.905, '/', '[', "T-LoRa Pager");
+    expect(len > 0 && f[0] == 0x3C && f[1] == 0xFF && f[2] == 0x01, "beacon header");
+    std::string t((char *)f + 3, len - 3);
+    expect(t == "K6ATV-6>APZPGR,WIDE1-1:!3720.50N/12154.30W[T-LoRa Pager", "beacon text exact");
+    AprsPos b; expect(aprsParse(f, len, b) && std::string(b.call) == "K6ATV-6" && near(b.lat, 37.3417, 2e-4) && near(b.lon, -121.905, 2e-4) && b.table == '/' && b.sym == '[', "beacon parses back");
+    // southern/eastern and a minute that rounds up to 60
+    char pos[24]; aprsFormatPosition(pos, sizeof pos, -33.99999, 151.0, '\\', '&');
+    expect(std::string(pos) == "3400.00S\\15100.00E&", "rounding carries into the degrees");
+    aprsFormatPosition(pos, sizeof pos, 0.0, 0.0, '/', '>'); expect(std::string(pos) == "0000.00N/00000.00E>", "zero");
+    char tiny[8]; expect(aprsBuildBeacon((unsigned char *)tiny, sizeof tiny, "K6ATV-6", "APZPGR", "", 1, 1, '/', '[', "") == 0, "too small a buffer is refused");
+    size_t l2 = aprsBuildBeacon(f, sizeof f, "K6ATV-6", "APZPGR", "", 37.0, -121.0, '/', '[', "x");
+    expect(std::string((char *)f + 3, l2 - 3).rfind("K6ATV-6>APZPGR:!", 0) == 0, "no path: no comma");
+  }
+  // ---- beacon timing ----
+  {
+    BeaconScheduler s; s.start(0);
+    expect(!s.due(14000, true, 37, -121), "not before the first delay");
+    expect(!s.due(20000, false, 37, -121), "never without a fix");
+    expect(s.due(15000, true, 37, -121), "first beacon after the delay");
+    s.sent(15000, 37.0, -121.0);
+    expect(!s.due(15000 + 20000, true, 37.01, -121), "not inside the minimum gap, even when moved");
+    expect(!s.due(15000 + 61000, true, 37.0, -121.0), "stationary: wait the long interval");
+    expect(s.due(15000 + 61000, true, 37.01, -121.0), "moved ~1 km: beacon after a minute");
+    expect(!s.due(15000 + 61000, true, 37.0005, -121.0), "moved ~55 m: not enough");
+    expect(s.due(15000 + 600000, true, 37.0, -121.0), "stationary beacon after 10 minutes");
+    expect(s.manualOk(15000 + 5000) && !s.manualOk(15000 + 4000), "manual beacon needs 5 s since the last");
+  }
   printf(fails ? "%d FAILED\n" : "all passed\n", fails);
   return fails != 0;
 }

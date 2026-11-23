@@ -80,3 +80,22 @@ inline bool aprsParse(const unsigned char *frame, size_t len, AprsPos &out) {
     default: return false;
   }
 }
+
+// ---- Building a position beacon ----
+// Format a position as the 19 characters "DDMM.mmN/DDDMM.mmW$" (table between lat and lon, symbol code last).
+inline void aprsFormatPosition(char *out, size_t n, double lat, double lon, char table, char sym) {
+  char ns = lat >= 0 ? 'N' : 'S', ew = lon >= 0 ? 'E' : 'W';
+  double a = fabs(lat), o = fabs(lon);
+  long la = (long)(a * 6000.0 + 0.5), lo = (long)(o * 6000.0 + 0.5);          // hundredths of a minute
+  snprintf(out, n, "%02ld%02ld.%02ld%c%c%03ld%02ld.%02ld%c%c", la / 6000, (la / 100) % 60, la % 100, ns, table,
+           lo / 6000, (lo / 100) % 60, lo % 100, ew, sym);
+}
+// Whole LoRa APRS frame: 3C FF 01 + "CALL>TOCALL,PATH:!position comment". Returns its length, 0 if it does not fit.
+inline size_t aprsBuildBeacon(unsigned char *out, size_t n, const char *call, const char *tocall, const char *path,
+                              double lat, double lon, char table, char sym, const char *comment) {
+  char pos[24]; aprsFormatPosition(pos, sizeof pos, lat, lon, table, sym);
+  if (n < 4) return 0;
+  out[0] = 0x3C; out[1] = 0xFF; out[2] = 0x01;
+  int k = snprintf((char *)out + 3, n - 3, "%s>%s%s%s:!%s%s", call, tocall, path && *path ? "," : "", path ? path : "", pos, comment ? comment : "");
+  return (k > 0 && (size_t)k < n - 3) ? (size_t)k + 3 : 0;
+}
