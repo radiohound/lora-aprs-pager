@@ -4,6 +4,9 @@
 // GPS NMEA status and the battery gauge. Everything is also printed on USB serial.
 #include <Arduino.h>
 #include <Wire.h>
+#include "haptic.h"
+#include "inputs.h"
+#include "keymap.h"
 #include <SPI.h>
 #include <SD.h>
 #include <RadioLib.h>
@@ -12,6 +15,11 @@
 #include "display.h"
 
 static XL9555 xp;
+static Haptic haptic;
+static Knob knob;
+static Keys keys;
+static int lastKey = 0; static bool lastKeyDown = false;
+static uint8_t keyHist[10]; static uint8_t keyHistN = 0;   // last raw codes of key PRESSES, newest last
 static PagerDisplay tft;
 
 // ---- LoRa APRS parameters (CA2RXU / lora-aprs.org standard) ----
@@ -19,7 +27,7 @@ static const float  LORA_FREQ = 433.775;
 static const float  LORA_BW   = 125.0;
 static const uint8_t LORA_SF  = 12;
 static const uint8_t LORA_CR  = 5;      // 4/5
-static const uint8_t LORA_SYNC = 0x34;
+static const uint8_t LORA_SYNC = 0x12;   // LoRa APRS uses the PRIVATE sync word 0x12 (CA2RXU/moricef firmware: RADIOLIB_SX126X_SYNC_WORD_PRIVATE), NOT LoRaWAN's 0x34
 static const uint16_t LORA_PREAMBLE = 8;
 
 static Module *mod = nullptr;
@@ -37,14 +45,14 @@ static const Module::RfSwitchMode_t lrTable[] = {
   {LR11x0::MODE_TX_HF, {LOW, LOW}}, {LR11x0::MODE_GNSS, {LOW, LOW}},
   {LR11x0::MODE_WIFI, {LOW, LOW}}, END_OF_MODE_TABLE};
 
-static int line = 0;
+static int line = 0;   // say() uses lines 0-14 (y up to 182) so the key history (y 194) and status (y 208) lines stay free
 static void say(const char *fmt, ...) {
   char b[160]; va_list a; va_start(a, fmt); vsnprintf(b, sizeof b, fmt, a); va_end(a);
   Serial.println(b);
   tft.setCursor(2, 2 + line * 12);
   tft.fillRect(0, 2 + line * 12, 480, 12, TFT_BLACK);
   tft.print(b);
-  line = (line + 1) % 17;
+  line = (line + 1) % 15;
 }
 
 static void i2cScan() {
@@ -114,11 +122,12 @@ void setup() {
     const uint8_t on[] = {XP_LORA_EN, XP_GPS_EN, XP_GPS_RST, XP_KB_EN, XP_KB_RST, XP_SD_EN, XP_GPIO_EN};
     for (uint8_t p : on) { xp.output(p, HIGH); delay(2); }
     xp.input(XP_SD_PULLEN);
-    xp.input(XP_SD_DET);
+    // NFC power (XP_NFC_EN) stays off on purpose: no NFC use, saves power; its chip select is parked high below.
+    // Haptic driver (XP_DRV_EN) is switched on by haptic.begin(). SD detect is only read, so it is left as the input it powers up as.
   }
 
-  // 2. All shared-SPI chip selects high before anything talks on the bus.
-  for (uint8_t p : {PIN_LORA_CS, PIN_SD_CS, PIN_NFC_CS}) { pinMode(p, OUTPUT); digitalWrite(p, HIGH); }
+  // 2. All shared-SPI chip selects high (and LoRa reset released) before anything talks on the bus.
+  for (uint8_t p : {PIN_LORA_CS, PIN_LORA_RST, PIN_SD_CS, PIN_NFC_CS}) { pinMode(p, OUTPUT); digitalWrite(p, HIGH); }
   SPI.begin(PIN_SCK, PIN_MISO, PIN_MOSI);
 
   // 3. Display
@@ -142,9 +151,19 @@ void setup() {
   // 4. Battery gauge (BQ27220 standard commands: 0x08 voltage mV, 0x2C state of charge %)
   say("Battery %u mV  %u %%", gaugeWord(0x08), gaugeWord(0x2C));
 
+  // 4b. Haptic: one click at boot so you can feel that it works
+  if (xpOk) { bool h = haptic.begin(xp); say("Haptic DRV2605: %s", h ? "ok" : "not found"); if (h) haptic.play(H_CLICK); }
+
+  // 4c. Knob and keyboard
+  knob.begin();
+  say("Keyboard TCA8418: %s", keys.begin() ? "ok" : "not found");
+
   // 5. SD card (read only: just mount and report size)
-  if (SD.begin(PIN_SD_CS, SPI, 4000000)) say("SD ok %llu MB", SD.cardSize() / (1024 * 1024));
-  else say("SD: no card or mount failed (detect pin=%d)", xpOk ? xp.read(XP_SD_DET) : -1);
+  if (SD.begin(PIN_SD_CS, SPI, 4000000)) {
+    static const char *types[] = {"none", "MMC", "SD", "SDHC", "?"};
+    uint8_t t = SD.cardType();
+    say("SD ok %s %llu MB", types[t > 4 ? 4 : t], SD.cardSize() / (1024 * 1024));
+  } else say("SD fail: detect pin=%d (try FAT32 card)", xpOk ? xp.read(XP_SD_DET) : -1);
 
   // 6. GPS
   Serial1.begin(GPS_BAUD, SERIAL_8N1, PIN_GPS_RX, PIN_GPS_TX);
@@ -157,7 +176,48 @@ static String nmea;
 static uint32_t nmeaLines = 0, lastStat = 0;
 static String lastGga;
 
+static const char *keyName(int raw) {
+  static char b[2] = {0, 0};
+  KeyInfo k = keyLookup(raw);
+  switch (k.mod) {
+    case KM_ENTER: return "Enter"; case KM_ALT: return "Alt"; case KM_SHIFT: return "Shift";
+    case KM_BACKSPACE: return "Bksp"; case KM_SPACE: return "Space"; default: break;
+  }
+  b[0] = k.ch ? k.ch : '?';
+  return b;
+}
+
+static void statusLine() {
+  static uint32_t t = 0;
+  if (millis() - t < 100) return;
+  t = millis();
+  char b[100];
+  snprintf(b, sizeof b, "knob %ld %s  key %d '%s' %s  gps %lu", (long)knob.pos, knob.pressed ? "PRESSED" : "-",
+           lastKey, keyName(lastKey), lastKeyDown ? "down" : "up", (unsigned long)nmeaLines);
+  tft.fillRect(0, 208, 480, 12, TFT_BLACK);
+  tft.setCursor(2, 208);
+  tft.print(b);
+  // history of the last key presses (raw codes), for mapping the keyboard
+  char h[100]; int n = snprintf(h, sizeof h, "keys:");
+  for (uint8_t i = 0; i < keyHistN && n < 90; i++) n += snprintf(h + n, sizeof h - n, " %u", keyHist[i]);
+  tft.fillRect(0, 194, 480, 12, TFT_BLACK);
+  tft.setCursor(2, 194);
+  tft.print(h);
+}
+
 void loop() {
+  if (int d = knob.poll()) haptic.play(H_TICK);
+  static bool wasPressed = false;
+  if (knob.pressed != wasPressed) { wasPressed = knob.pressed; if (wasPressed) haptic.play(H_CLICK); }
+  if (uint8_t e = keys.poll()) {
+    lastKey = e & 0x7F; lastKeyDown = e & 0x80;
+    if (lastKeyDown) {
+      haptic.play(H_TICK);
+      if (keyHistN == sizeof keyHist) { memmove(keyHist, keyHist + 1, sizeof keyHist - 1); keyHistN--; }
+      keyHist[keyHistN++] = lastKey;
+    }
+  }
+  statusLine();
   while (Serial1.available()) {
     char c = Serial1.read();
     if (c == '\n') {

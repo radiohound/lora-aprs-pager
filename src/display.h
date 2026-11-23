@@ -8,7 +8,7 @@
 #include "pins.h"
 
 #ifndef PAGER_ROTATION
-#define PAGER_ROTATION 1   // landscape, 480x222
+#define PAGER_ROTATION 0   // landscape 480x222 (with offset_rotation 3: 0 and 2 are the landscape ones; 0 tried first)
 #endif
 
 class PagerDisplay : public lgfx::LGFX_Device {
