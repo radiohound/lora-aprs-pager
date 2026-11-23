@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Take a screenshot of the T-LoRa Pager running the viewer firmware, over USB.
+"""Take a screenshot of the T-LoRa Pager running the application firmware, over USB.
 
-Usage: tools/screenshot.py [out.png] [--port /dev/cu.usbmodemXXXX]
+Usage: tools/screenshot.py [out.png] [--port /dev/cu.usbmodemXXXX] [--send 'V1\\nG37.77,-122.49,12\\n'] [--wait 1.5]
 Needs pyserial and Pillow. On this Mac: PYTHONPATH=$HOME/.platformio/penv/lib/python3.11/site-packages python3 tools/screenshot.py out.png
 (system python3 has Pillow, the PlatformIO venv has pyserial).
 The firmware answers an 'S' byte with its off-screen frame buffer. The port is opened WITHOUT touching DTR/RTS:
@@ -11,7 +11,12 @@ import glob, sys, time
 import serial
 from PIL import Image
 
-args = [a for a in sys.argv[1:] if not a.startswith("--")]
+# optional: --send "V1\nG37.77,-122.49,12\n" sends test commands first (set the view / map position), --wait 1.5 waits that long before the screenshot
+def opt(name, default=None):
+    return sys.argv[sys.argv.index(name) + 1] if name in sys.argv else default
+send = opt("--send"); wait = float(opt("--wait", "1.5"))
+skip = {opt("--send"), opt("--wait"), opt("--port")}
+args = [a for a in sys.argv[1:] if not a.startswith("--") and a not in skip]
 out = args[0] if args else "pager-screenshot.png"
 port = sys.argv[sys.argv.index("--port") + 1] if "--port" in sys.argv else (glob.glob("/dev/cu.usbmodem*") or [None])[0]
 if not port:
@@ -19,6 +24,9 @@ if not port:
 
 s = serial.Serial(port, 115200, timeout=0.5)
 s.reset_input_buffer()
+if send:
+    s.write(send.encode().decode("unicode_escape").encode()); s.flush(); time.sleep(wait)
+    s.reset_input_buffer()
 s.write(b"S")
 buf = bytearray(); t0 = time.time(); w = h = 0
 while time.time() - t0 < 15:
@@ -29,7 +37,7 @@ while time.time() - t0 < 15:
         if len(buf) >= start + w * h * 2:
             raw = bytes(buf[start:start + w * h * 2]); break
 else:
-    sys.exit("no screenshot received (is the viewer firmware running?)")
+    sys.exit("no screenshot received (is the application firmware running?)")
 
 img = Image.new("RGB", (w, h))
 px = img.load()

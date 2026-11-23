@@ -1,5 +1,5 @@
 // Messages screens for the pager: conversation list, thread, compose, and the knob-driven menu.
-// Included by viewer.cpp AFTER the stations table, drawSymbol(), the haptic object and the Messenger `M` exist; it uses them directly.
+// Included by app.cpp AFTER the stations table, drawSymbol(), the haptic object and the Messenger `M` exist; it uses them directly.
 // Knob rule (docs/messaging.md): everything works with the knob alone: turn = move, press = open/select, long press = menu.
 #pragma once
 #include <string>

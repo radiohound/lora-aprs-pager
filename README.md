@@ -4,10 +4,13 @@ A LoRa APRS tracker, station map and messenger for the **LilyGO T-LoRa Pager (43
 It listens on 433.775 MHz, draws the stations it hears on a map from your own SD card, beacons your position, and sends and receives
 APRS messages with acknowledgements, all on the pager's own screen, rotary knob and keyboard. Setup is done from a phone.
 
-> **Status (2026-11-23):** working on a real pager, used and tested by its author. Private repository, not released.
+> **Status: alpha.** Working on a real pager, tested by its author on one unit only (the SX1262 version). Expect rough edges.
 > **It transmits.** You need an amateur radio licence and your own call sign. The pager will not transmit until a call sign is saved.
 
-![Map with stations](docs/screenshots/map-final-2.png)
+![Map and heard stations](docs/screenshots/demo-list-and-map.png)
+
+*The screenshots with stations and with the full list show **demo data**: simulated stations (`N0DEMO-1` to `-8`) around Golden Gate Park, produced by the
+firmware's demo mode (`DEMO MODE` is shown on the screen, and nothing is transmitted while it is on). The other pictures are real.*
 
 ## What it does
 
@@ -36,8 +39,12 @@ The firmware only **reads** the SD card. Settings and messages live in the pager
 
 | | |
 |---|---|
-| ![Thread](docs/screenshots/msg-9.png) | ![Conversations](docs/screenshots/msg-7.png) |
-| A thread, with emoticon pictures and delivery status | The conversation list |
+| ![Full list, following](docs/screenshots/demo-full-list-following.png) | ![Full list, just heard](docs/screenshots/demo-full-list-just-heard.png) |
+| FULL LIST view (demo data): everything about the selected station | A station that has just been heard lights up (demo data) |
+| ![Terrain and trails](docs/screenshots/map-trails.png) | ![Conversations](docs/screenshots/conversations.png) |
+| Terrain, grade-coloured trails and peak heights from your own map card | The conversation list |
+| ![Setup](docs/screenshots/setup.png) | ![MAP+STATIONS view](docs/screenshots/demo-map-stations.png) |
+| Phone setup: scan the left code to join the pager's hotspot, the right one to open the page | MAP+STATIONS view (demo data) |
 
 ## Controls
 
@@ -85,15 +92,15 @@ Things worth knowing (all found on the real hardware):
 - Keyboard: the `P` key arrives as raw code 97 and `Enter` as 98 (the chip reports the last column as GPIO-style events), and `Enter` also
   closes matrix key 20. The map is in `src/keymap.h`. The keyboard chip has been seen to stop reporting keys; the firmware now checks its
   setup once a second and re-programs it (cause not proven, suspected radio burst).
-- The screen's bytes are swapped for 16-bit pixels in LovyanGFX; icon blending in `src/viewer/viewer.cpp` accounts for that.
+- The screen's bytes are swapped for 16-bit pixels in LovyanGFX; icon blending in `src/app/app.cpp` accounts for that.
 - Opening the pager's USB serial port with DTR/RTS set resets the chip every time. `tools/screenshot.py` does not set them.
 
 ## Build and flash
 
-    pio run -e viewer                       # the application
-    pio run -e viewer -t upload --upload-port <PORT>
+    pio run -e app                          # the application
+    pio run -e app -t upload --upload-port <PORT>
 
-PlatformIO environments: `viewer` is the application (a legacy name; the real firmware), `pager` is the milestone-1 bring-up test,
+PlatformIO environments: `app` is the application, `pager` is the milestone-1 bring-up test,
 `bench` / `bench_tdeck` are the read-only tile benchmarks (see [docs/benchmarks.md](docs/benchmarks.md)).
 
 **Before the first flash, back up the factory firmware** (the LilyGO menu is replaced by this application):
@@ -127,7 +134,7 @@ They cover the APRS frame parser and beacon builder, GPS sentences, distance and
 
 | | |
 |---|---|
-| `src/viewer/viewer.cpp` | the application: map, stations, beacon, setup hotspot, glue |
+| `src/app/app.cpp` | the application: map, stations, beacon, setup hotspot, glue |
 | `src/aprs.h`, `src/nmea.h`, `src/geo.h` | APRS frames, GPS sentences, distance / bearing (plain C++) |
 | `src/messaging.h`, `src/msg_ui.h`, `src/emoticons.h` | messaging engine, its screens, emoticon matching |
 | `src/settings_core.h`, `src/webui.h` | settings and their validation, the phone setup page |
@@ -141,28 +148,26 @@ They cover the APRS frame parser and beacon builder, GPS sentences, distance and
 
 Mic-E and other position formats are not decoded (those stations do not appear); bulletins, group text and meeting-spot objects are
 designed but not built; the battery level is not shown on screen; the LilyGO menu cannot be kept alongside this application (it needs a
-two-app flash layout); the tocall is the experimental `APZPGR` (a registered one is to be requested); vector maps are a later phase;
-no licence has been chosen for this code.
+two-app flash layout); the tocall is the experimental `APZPGR` (a registered one is to be requested); vector maps are a later phase.
 
-## Before going public (checklist)
 
-An initial testing release is planned. Before the repository is made public:
-- **Choose a licence** for this code and add a `LICENSE` file (none chosen yet).
-- **Check the symbol licences**: the aprs.fi symbols have mixed licences (see Credits below); decide whether to ship them, replace them, or
-  fetch them at build time. Make sure the Twemoji credit stays.
-- **Screenshots**: those in `docs/screenshots` show the author's home area in the coordinates at the bottom of the map and in the station list;
-  retake them somewhere neutral or remove them. The call signs shown are public ones, but check what you want to keep.
-- **Register a tocall** (the pager transmits as the experimental `APZPGR` for now) and put it in `TOCALL` in `src/viewer/viewer.cpp`.
-- **Rename** the `viewer` PlatformIO environment (it is the real application) and decide how firmware is distributed (a built `.bin` with a
-  flashing note, for people who do not want to build it).
-- Re-read `docs/messaging.md` and the README for anything that is private or only true for the author's setup.
+## Releases
+
+The first release is **v0.1.0-alpha.1**, a testing release: it is meant for people who are comfortable building firmware and who hold an amateur radio licence.
+Bug reports are welcome. Not done yet is listed above; the registered tocall (the pager currently transmits as the experimental `APZPGR`, see
+`docs/tocall-request.md`) is one of the first things to change.
+
+## Licence
+
+The code is under the MIT licence (see `LICENSE`). The pictures and libraries below keep their own terms.
 
 ## Credits and licences of things in the firmware
 
 These pictures are **not** covered by this project's own licence:
-- **APRS symbols:** the aprs.fi symbol set by Heikki Hannikainen, OH7LZB (https://github.com/hessu/aprs-symbols). Its licences are mixed
-  (many CC BY-SA 2.0 or public domain; the originals come from older APRS software). Read its `COPYRIGHT.md` before making this repository
-  public. Built into `src/symbols24.bin` and `src/web/sym*.png` by `tools/make_symbols.py` and `tools/make_symbol_sheets.py`.
+- **APRS symbols:** the aprs.fi symbol set by Heikki Hannikainen, OH7LZB (https://github.com/hessu/aprs-symbols), included here with this credit.
+  Its licensing is mixed and partly unknown: most symbols are vectorised from the old APRS bitmaps whose designers and licence are unknown,
+  some are CC BY-SA 2.0 or public domain, and a few are brand logos (Apple, Microsoft, Kenwood) that belong to those companies. Read its
+  `COPYRIGHT.md`. If you are a rights holder and want a symbol removed, open an issue. Built into `src/symbols24.bin` and `src/web/sym*.png` by `tools/make_symbols.py` and `tools/make_symbol_sheets.py`.
 - **Emoticon pictures:** Twemoji graphics, (c) Twitter, Inc and other contributors, CC-BY 4.0 (https://github.com/jdecked/twemoji,
   LICENSE-GRAPHICS), built into `src/emoji18.bin` by `tools/make_emoji.py`.
 

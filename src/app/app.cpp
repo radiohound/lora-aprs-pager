@@ -1,5 +1,6 @@
-// Tile viewer: draws the T-Deck card's raster tiles (/LoRa_Tracker/Maps/<REGION>/<z>/<x>/<y>.jpg|png) placed by x/y.
-// Read-only on the SD card. Knob only: turn = zoom or pan, press = switch what the knob does (ZOOM -> PAN W-E -> PAN N-S).
+// The application: LoRa APRS tracker, station map and messenger for the T-LoRa Pager (see README.md).
+// Map from the T-Deck card layout (/LoRa_Tracker/Maps/<REGION>/<z>/<x>/<y>.jpg|png, read-only), heard stations, beacon, messaging, phone setup.
+// Knob: turn = pan / zoom / select, press = switch what the knob does, long press = centre on me.
 #include <Arduino.h>
 #include <Wire.h>
 #include <SPI.h>
@@ -46,6 +47,7 @@ static const char *TOCALL = "APZPGR";          // experimental tocall (APZ...), 
 static PagerSettings S;                         // call sign, path, symbol, power, intervals...: set on the phone setup page, kept in flash
 static PagerSettings loadSettings();           // defined further down
 static bool autoBeacon = false;
+static bool demoMode = false;     // test hook D: simulated stations and position for screenshots; NOTHING is transmitted while it is on (RST ends it)
 static BeaconScheduler beacon;
 static unsigned long txCount = 0;
 
@@ -80,6 +82,37 @@ static void stationUpdate(const AprsPos &p, float rssi, float snr, const char *r
 
 // ---- GPS ----
 static NmeaParser gps;
+
+// Demo data for screenshots (test hook D<lat>,<lon>): simulated stations around a place, with obviously fake call signs.
+// The pager acts as if it were at that place and sends nothing at all until it is restarted.
+static void loadDemo(double lat, double lon) {
+  struct D { const char *call; char table, sym; double dx, dy; int rssi; double snr; const char *path, *via, *comment; int count, ageS; };
+  static const D demo[] = {
+    {"N0DEMO-1", 'L', '&', 1800, 1200, -78,  4.5, "WIDE1-1",            "",         "LoRa iGate and digipeater", 42, 20},
+    {"N0DEMO-2", '/', '[',  -400,  350, -62,  7.0, "N0DEMO-1*,WIDE1",   "N0DEMO-1", "walking the park", 17, 95},
+    {"N0DEMO-3", '/', '>', 2500, -900, -91, -3.5, "N0DEMO-1*,WIDE1",   "N0DEMO-1", "driving, 38 km/h", 9, 300},
+    {"N0DEMO-4", '/', '-', -1500, -600, -85,  2.0, "WIDE1-1",            "",         "home station", 63, 40},
+    {"N0DEMO-5", '/', 'b',   45,   35, -54,  9.5, "WIDE1-1",            "",         "bike ride", 5, 12},
+    {"N0DEMO-6", '/', 'k',   95,  -40, -57,  8.0, "N0DEMO-4*,WIDE1",   "N0DEMO-4", "supply truck", 3, 150},
+    {"N0DEMO-7", '/', '#',  -55,   80, -49, 10.5, "WIDE1-1",            "",         "digipeater", 120, 5},
+    {"N0DEMO-8", '/', 'O', -3000, 2200, -108, -12.5, "N0DEMO-1*,N0DEMO-4*", "N0DEMO-4", "balloon, 1520 m", 2, 1500},
+  };
+  memset(stations, 0, sizeof stations);
+  int i = 0;
+  for (auto &d : demo) {
+    Station &st = stations[i++]; st.used = true;
+    strncpy(st.call, d.call, 9); st.table = d.table; st.sym = d.sym;
+    st.lat = lat + d.dy / 111320.0; st.lon = lon + d.dx / (111320.0 * cos(lat * M_PI / 180.0));
+    st.rssi = d.rssi; st.snr = (float)d.snr; st.count = d.count; st.heard = millis() - (uint32_t)d.ageS * 1000UL; st.first = st.heard - 600000UL;
+    strncpy(st.path, d.path, sizeof st.path - 1); strncpy(st.via, d.via, sizeof st.via - 1); strncpy(st.comment, d.comment, sizeof st.comment - 1);
+    char pos[24]; aprsFormatPosition(pos, sizeof pos, st.lat, st.lon, d.table, d.sym);
+    snprintf(st.raw, sizeof st.raw, "%s>APZDEM,%s:!%s%s", d.call, d.path, pos, d.comment);
+  }
+  gps.fix.valid = true; gps.fix.lat = lat; gps.fix.lon = lon; gps.fix.sats = 9;       // "me" is at the demo place too
+  demoMode = true; autoBeacon = false;
+  strcpy(lastHeardCall, "N0DEMO-7"); lastHeardAt = millis();                              // lights up in the full list for a few seconds
+}
+
 static bool dirty = false;
 static uint32_t lastDraw = 0;
 static const char *notice = nullptr; static uint32_t noticeUntil = 0;
@@ -474,7 +507,7 @@ static void render() {
     char tx[16] = "TX off";
     if (autoBeacon) { if (beacon.hasSent()) { char a[8]; geoFmtAge(a, sizeof a, beacon.lastSentAgeMs(millis()) / 1000); snprintf(tx, sizeof tx, "TX auto %s", a); } else snprintf(tx, sizeof tx, "TX auto"); }
     char um[12] = ""; if (M.unreadTotal()) snprintf(um, sizeof um, " MSG %d", M.unreadTotal());
-    D.printf(" %s z%d %s %lums GPS %s %s%s ", VIEW_TAG[stView], z, MODE_NAME[mode], (unsigned long)tTiles, gps.fix.valid ? "fix" : "none", tx, um);
+    D.printf(" %s z%d %s %lums GPS %s %s%s ", VIEW_TAG[stView], z, MODE_NAME[mode], (unsigned long)tTiles, gps.fix.valid ? "fix" : "none", demoMode ? "DEMO MODE" : tx, demoMode ? "" : um);
   }
   D.setCursor(x0 + 2, H - 10);
   D.printf(" %.4f %.4f ", clat, clon);
@@ -502,16 +535,16 @@ void setup() {
 
   buf = (uint8_t *)heap_caps_malloc(BUFSZ, MALLOC_CAP_SPIRAM);
   bool mounted = SD.begin(PIN_SD_CS, SPI, 20000000) || SD.begin(PIN_SD_CS, SPI, 4000000);
-  if (!buf || !mounted) { tft.setCursor(2, 2); tft.printf("viewer: buffer %s, SD %s", buf ? "ok" : "FAIL", mounted ? "ok" : "FAIL"); return; }
+  if (!buf || !mounted) { tft.setCursor(2, 2); tft.printf("Start-up: buffer %s, SD %s", buf ? "ok" : "FAIL", mounted ? "ok" : "FAIL"); return; }
 
   const char *cands[] = {"/LoRa_Tracker/Maps", "/maps"};
   String base;
   for (auto c : cands) if (SD.exists(c)) { base = c; break; }
-  if (base == "") { tft.setCursor(2, 2); tft.print("viewer: no /LoRa_Tracker/Maps on the card"); return; }
+  if (base == "") { tft.setCursor(2, 2); tft.print("No /LoRa_Tracker/Maps folder on the SD card"); return; }
   File r = SD.open(base); String region;
   while (true) { File e = r.openNextFile(); if (!e) break; if (e.isDirectory()) { region = e.name(); e.close(); break; } e.close(); }
   r.close();
-  if (region == "") { tft.setCursor(2, 2); tft.print("viewer: no region folder"); return; }
+  if (region == "") { tft.setCursor(2, 2); tft.print("No region folder under /LoRa_Tracker/Maps"); return; }
   root = base + "/" + region;
 
   // GPS on Serial1 (38400 baud), keyboard, and the radio (receive only)
@@ -626,27 +659,33 @@ static void stopSetup() {
 static void drawSetup() {
   lgfx::LovyanGFX &D = fbOk ? (lgfx::LovyanGFX &)fb : (lgfx::LovyanGFX &)tft;
   D.fillScreen(TFT_BLACK);
+  D.fillRect(0, 0, 480, 15, C_BAR); D.setTextSize(1);
+  D.setTextColor(TFT_CYAN); D.setCursor(4, 4); D.print("1  JOIN THE WIFI");
+  D.setCursor(194, 4); D.print("PHONE SETUP");
+  D.setCursor(312, 4); D.print("2  OPEN THE PAGE");
+  // left: QR that joins the hotspot. right: QR that opens the setup page (works once the phone is on the hotspot; no pop-up needed)
   char pay[64]; snprintf(pay, sizeof pay, "WIFI:T:WPA;S:%s;P:%s;;", apSsid, apPass);
-  D.fillRect(4, 4, 214, 214, TFT_WHITE); D.qrcode(pay, 12, 12, 198, 4);
-  int x = 228;
-  D.setTextColor(TFT_CYAN, TFT_BLACK); D.setTextSize(2); D.setCursor(x, 6); D.print("PHONE SETUP");
-  D.setTextSize(1); D.setTextColor(TFT_WHITE, TFT_BLACK);
-  D.setCursor(x, 32); D.print("1. Scan the QR code, or join the WiFi:");
-  D.setTextSize(2); D.setTextColor(TFT_YELLOW, TFT_BLACK);
-  D.setCursor(x, 46); D.print(apSsid);
-  D.setTextSize(1); D.setTextColor(TFT_WHITE, TFT_BLACK);
-  D.setCursor(x, 68); D.print("password:");
-  D.setTextSize(2); D.setTextColor(TFT_YELLOW, TFT_BLACK); D.setCursor(x, 80); D.print(apPass);
-  D.setTextSize(1); D.setTextColor(TFT_WHITE, TFT_BLACK);
-  D.setCursor(x, 108); D.print("2. Open this address in your phone's");
-  D.setCursor(x, 120); D.print("   browser:");
-  D.setTextSize(2); D.setTextColor(TFT_YELLOW, TFT_BLACK); D.setCursor(x, 134); D.print("192.168.4.1");
-  D.setTextSize(1); D.setTextColor(TFT_WHITE, TFT_BLACK);
-  D.setCursor(x, 160); D.printf("Phones connected: %d", WiFi.softAPgetStationNum());
-  D.setTextColor(TFT_DARKGREY, TFT_BLACK); D.setCursor(x, 172); D.printf("joined %d  left %d  IP given %d", evJoined, evLeft, evIp);
-  D.setCursor(x, 184); D.printf("pages served %d %s", evReq, lastReq);
-  if (savedAt && millis() - savedAt < 6000) { D.setTextColor(TFT_GREEN, TFT_BLACK); D.setCursor(x, 196); D.print("Settings saved"); }
-  D.setTextColor(TFT_DARKGREY, TFT_BLACK); D.setCursor(x, 206); D.print("Enter, Backspace or knob press: exit");
+  D.fillRect(2, 18, 168, 168, TFT_WHITE);   D.qrcode(pay, 3, 19, 165, 4);                       // version 4 = 33 modules, 5 px each
+  D.fillRect(310, 18, 168, 168, TFT_WHITE); D.qrcode("http://192.168.4.1", 319, 27, 150, 2);    // version 2 = 25 modules, 6 px each
+  D.setTextColor(C_GRAY);
+  D.setCursor(4, 192); D.print("Scan with the camera,"); D.setCursor(4, 203); D.print("then tap Join.");
+  D.setCursor(312, 192); D.print("After joining, scan this"); D.setCursor(312, 203); D.print("to open the setup page.");
+  // middle: the same things in words, for typing, and what the hotspot has seen
+  const int x = 174;
+  D.setTextColor(C_GRAY); D.setCursor(x, 22); D.print("WiFi name");
+  D.setTextSize(2); D.setTextColor(TFT_YELLOW); D.setCursor(x, 32); D.print(apSsid);
+  D.setTextSize(1); D.setTextColor(C_GRAY); D.setCursor(x, 58); D.print("Password");
+  D.setTextSize(2); D.setTextColor(TFT_YELLOW); D.setCursor(x, 68); D.print(apPass);
+  D.setTextSize(1); D.setTextColor(C_GRAY); D.setCursor(x, 94); D.print("Page address");
+  D.setTextSize(2); D.setTextColor(TFT_YELLOW); D.setCursor(x, 104); D.print("192.168.4.1");
+  D.setTextSize(1); D.setTextColor(TFT_WHITE); D.setCursor(x, 136); D.printf("Phones joined: %d", WiFi.softAPgetStationNum());
+  D.setTextColor(C_GRAY);
+  D.setCursor(x, 148); D.printf("joined %d  left %d", evJoined, evLeft);
+  D.setCursor(x, 159); D.printf("IP given %d", evIp);
+  D.setCursor(x, 170); D.printf("pages %d %.8s", evReq, lastReq);
+  if (savedAt && millis() - savedAt < 6000) { D.setTextColor(TFT_GREEN); D.setCursor(x, 183); D.print("Settings saved"); }
+  D.setTextColor(C_GRAY); D.setCursor(x, 203); D.print("Exit: Enter, Backspace");
+  D.setCursor(x, 212); D.print("or a knob press");
   if (fbOk) fb.pushSprite(0, 0);
 }
 static void setupTick() {
@@ -669,6 +708,7 @@ static void setupTick() {
 // Put one frame on the air after listening first (channel activity detection, up to 3 tries with a random wait).
 // Returns 0 = sent, 1 = channel busy (nothing sent), 2 = the radio failed. Blocks about 3 s at SF12.
 static int txFrame(const unsigned char *f, size_t len) {
+  if (demoMode) return 1;                              // demo mode never transmits
   bool free = false;
   for (int tries = 0; tries < 3 && !free; tries++) {
     int c = radio->scanChannel();
@@ -694,6 +734,7 @@ static int txEngineItem(const msg::TxItem &it) {
 // Send one position beacon now. Listens first (channel activity detection, up to 3 tries with a random wait) and gives up if the
 // channel stays busy. Returns true if it went out. Blocks about 3 s at SF12.
 static bool sendBeacon() {
+  if (demoMode) { say("Demo mode: nothing is sent"); return false; }
   if (!radioOk) { say("No radio"); return false; }
   if (strcmp(S.call, "N0CALL") == 0) { say("Set your call sign: press Enter"); haptic.play(H_ERROR); return false; }
   if (!gps.fix.valid) { say("No GPS fix: no beacon"); haptic.play(H_ERROR); return false; }
@@ -768,6 +809,7 @@ void loop() {
 
   // GPS characters
   while (Serial1.available()) {
+    if (demoMode) { Serial1.read(); continue; }                // demo: the real GPS is ignored
     if (!gps.feed((char)Serial1.read())) continue;
     // only redraw when my dot would move at least a pixel at this zoom, or the fix appeared/vanished
     static bool lastValid = false; static double lastX = 0, lastY = 0;
@@ -778,10 +820,32 @@ void loop() {
   }
 
   // 'S' from the Mac = send a screenshot
-  while (Serial.available()) {
-    int c = Serial.read();
-    if (c == 'S') sendScreenshot();
-    else if (c == 'M' && !ui.active() && !setupMode) { ui.open(); Serial.println("ui: opened by serial"); }   // test hook: open Messages from the Mac
+  // Test hooks from the Mac (used to take screenshots): "S" screenshot, "M" open Messages, "G<lat>,<lon>,<zoom>\n" put the map there,
+  // "V<0-3>\n" choose the L view, "C<call>\n" select a heard station, "X\n" back to the map.
+  {
+    static char cmd[40]; static int cmdN = -1;
+    while (Serial.available()) {
+      int c = Serial.read();
+      if (cmdN >= 0) {
+        if (c != '\n' && c != '\r') { if (cmdN < (int)sizeof cmd - 1) cmd[cmdN++] = (char)c; continue; }
+        cmd[cmdN] = 0; cmdN = -1;
+        if (cmd[0] == 'G') {
+          double la, lo; int z;
+          if (sscanf(cmd + 1, "%lf,%lf,%d", &la, &lo, &z) == 3 && fabs(la) < 85 && fabs(lo) <= 180) {
+            for (int i = 0; i < NZ; i++) if (ZOOMS[i] == z) zi = i;
+            clat = la; clon = lo; dirty = true; Serial.printf("map: %.4f %.4f z%d\n", la, lo, ZOOMS[zi]);
+          }
+        } else if (cmd[0] == 'V') { int v = atoi(cmd + 1); if (v >= 0 && v <= 3) { stView = v; if (stView != 0 && mode == M_LIST) mode = M_PANX; dirty = true; } }
+        else if (cmd[0] == 'C') { strncpy(selCall, cmd + 1, 9); selCall[9] = 0; lastKnobAt = millis(); dirty = true; }
+        else if (cmd[0] == 'X') { ui.close(); mainMenu.on = false; dirty = true; }
+        else if (cmd[0] == 'D') { double la, lo; if (sscanf(cmd + 1, "%lf,%lf", &la, &lo) == 2) { loadDemo(la, lo); clat = la; clon = lo; dirty = true; Serial.println("demo mode on: simulated stations, nothing is transmitted until RST"); } }
+        else if (cmd[0] == 'R') { Serial.println("restarting"); delay(100); esp_restart(); }
+        continue;
+      }
+      if (c == 'S') sendScreenshot();
+      else if (c == 'M' && !ui.active() && !setupMode) { ui.open(); Serial.println("ui: opened by serial"); }
+      else if (c == 'G' || c == 'V' || c == 'C' || c == 'X' || c == 'D' || c == 'R') { cmd[0] = (char)c; cmdN = 1; }
+    }
   }
 
   // received packets
