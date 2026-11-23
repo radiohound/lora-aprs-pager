@@ -46,8 +46,16 @@ button{font:inherit;padding:12px 18px;border-radius:10px;border:0;background:var
 <div class="chk"><input type="checkbox" id="auto"><label for="auto">Start beaconing when switched on</label></div></div>
 
 <div class="card"><h2>Pager</h2>
+<label for="dim">Dim the screen after</label><select id="dim"><option value="0">Never</option><option value="15">15 seconds</option><option value="30">30 seconds</option><option value="60">1 minute</option><option value="120">2 minutes</option><option value="300">5 minutes</option></select>
+<label for="off">Turn the screen off after</label><select id="off"><option value="0">Never</option><option value="60">1 minute</option><option value="120">2 minutes</option><option value="300">5 minutes</option><option value="600">10 minutes</option><option value="1800">30 minutes</option></select>
+<small>Any key or knob turn brings the screen back at once, exactly as it was. There is no lock screen. A new message also wakes it.</small>
+<div class="chk"><input type="checkbox" id="baticon"><label for="baticon">Battery shape in the top right corner</label></div>
 <div class="chk"><input type="checkbox" id="haptic"><label for="haptic">Haptic feedback</label></div>
 <label for="bright">Screen brightness</label><input type="range" id="bright" min="10" max="255"></div>
+
+<div class="card"><h2>Clock</h2>
+<label for="tz">Time zone (hours from UTC)</label><input type="number" id="tz" min="-12" max="14"><small>The time comes from GPS in UTC. California is -8 (Pacific standard time).</small>
+<div class="chk"><input type="checkbox" id="dst"><label for="dst">Add an hour in US daylight saving time</label></div></div>
 
 <button type="submit">Save</button><div id="msg"></div>
 </form>
@@ -63,11 +71,11 @@ function build(){const g=$('grid');g.innerHTML='';for(let n=0;n<94;n++){const c=
 function ovInput(){const v=$('ov').value.toUpperCase();$('ov').value=v;tbl=/^[0-9A-Z]$/.test(v)?v:'\\';show()}
 fetch('settings.json').then(r=>r.json()).then(s=>{
  $('call').value=s.call;$('comment').value=s.comment;$('path').value=s.path;$('txdbm').value=s.txdbm;$('movem').value=s.movem;
- $('moving').value=s.moving;$('stationary').value=s.stationary;$('auto').checked=!!s.auto;$('haptic').checked=!!s.haptic;$('bright').value=s.bright;
+ $('moving').value=s.moving;$('stationary').value=s.stationary;$('auto').checked=!!s.auto;$('haptic').checked=!!s.haptic;$('bright').value=s.bright;$('tz').value=s.tz;$('dst').checked=!!s.dst;$('baticon').checked=!!s.baticon;$('dim').value=s.dim;$('off').value=s.off;
  tbl=s.table;code=s.sym;T=tbl=='/'?0:1;$('ov').value=/^[0-9A-Z]$/.test(tbl)?tbl:'';tab(T)}).catch(()=>{$('msg').textContent='Could not load the settings';$('msg').className='err'});
 async function save(ev){ev.preventDefault();const m=$('msg');m.className='';m.textContent='Saving...';
  const p=new URLSearchParams({call:$('call').value,path:$('path').value,table:tbl,sym:code,comment:$('comment').value,txdbm:$('txdbm').value,
-  moving:$('moving').value,stationary:$('stationary').value,movem:$('movem').value,auto:$('auto').checked?1:0,haptic:$('haptic').checked?1:0,bright:$('bright').value});
+  moving:$('moving').value,stationary:$('stationary').value,movem:$('movem').value,auto:$('auto').checked?1:0,haptic:$('haptic').checked?1:0,bright:$('bright').value,tz:$('tz').value,dst:$('dst').checked?1:0,baticon:$('baticon').checked?1:0,dim:$('dim').value,off:$('off').value});
  try{const r=await fetch('save',{method:'POST',body:p});const j=await r.json();m.textContent=j.ok?'Saved. The pager is using the new settings.':j.error;m.className=j.ok?'ok':'err'}
  catch(e){m.textContent='Could not reach the pager';m.className='err'}return false}
 </script></body></html>)HTML";

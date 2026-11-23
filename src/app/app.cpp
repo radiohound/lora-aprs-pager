@@ -27,6 +27,7 @@
 #include "webui.h"
 #include <LittleFS.h>
 #include "messaging.h"
+#include "clock.h"
 
 static XL9555 xp;
 static PagerDisplay tft;
@@ -117,6 +118,67 @@ static bool dirty = false;
 static uint32_t lastDraw = 0;
 static const char *notice = nullptr; static uint32_t noticeUntil = 0;
 static void say(const char *m) { notice = m; noticeUntil = millis() + 2500; dirty = true; }
+
+// ---- Clock and battery. Time: from GPS (UTC), kept running with millis(), and saved to the RTC chip (PCF85063) so it is right at power-on
+// even with no fix. Shown in local time using the offset from the setup page. Battery: the BQ27220 fuel gauge (percent), BQ25896 charger (charging).
+static uint32_t clkEpoch = 0, clkAt = 0, clkGpsSeen = 0, rtcWrittenAt = 0; static bool rtcWritten = false;
+static int batPct = -1; static bool batCharging = false;
+static int i2cRead(uint8_t addr, uint8_t reg, uint8_t *buf, uint8_t n) {
+  Wire.beginTransmission(addr); Wire.write(reg); if (Wire.endTransmission(false) != 0) return -1;
+  if (Wire.requestFrom(addr, n) != n) return -1;
+  for (uint8_t i = 0; i < n; i++) buf[i] = Wire.read();
+  return 0;
+}
+static void rtcRead() {                                  // seconds, minutes, hours, days, weekday, months, years (BCD); bit 7 of seconds = the clock stopped
+  uint8_t r[7]; if (i2cRead(ADDR_PCF85063, 0x04, r, 7) != 0 || (r[0] & 0x80)) return;
+  int y = 2000 + clockFromBcd(r[6]), mo = clockFromBcd(r[5] & 0x1F), d = clockFromBcd(r[3] & 0x3F);
+  if (y < 2024 || mo < 1 || mo > 12 || d < 1 || d > 31) return;
+  clkEpoch = (uint32_t)(clockDays(y, mo, d) * 86400 + clockFromBcd(r[2] & 0x3F) * 3600 + clockFromBcd(r[1] & 0x7F) * 60 + clockFromBcd(r[0] & 0x7F)); clkAt = millis();
+}
+static void rtcWrite(uint32_t utc) {
+  LocalTime t = clockBreak(utc);
+  Wire.beginTransmission(ADDR_PCF85063); Wire.write(0x04);
+  Wire.write(clockToBcd(t.sec)); Wire.write(clockToBcd(t.min)); Wire.write(clockToBcd(t.hour)); Wire.write(clockToBcd(t.day));
+  Wire.write((uint8_t)t.wday); Wire.write(clockToBcd(t.month)); Wire.write(clockToBcd(t.year % 100)); Wire.endTransmission();
+}
+static uint32_t utcNow() { return clkEpoch ? clkEpoch + (millis() - clkAt) / 1000 : 0; }
+static void clockTick() {                                // once a second: take new GPS time, save it to the RTC now and then, read the battery
+  if (gps.fix.epoch && gps.fix.epoch != clkGpsSeen && gps.fix.epoch > 1700000000UL) {
+    clkGpsSeen = gps.fix.epoch; clkEpoch = gps.fix.epoch; clkAt = millis();
+    if (!rtcWritten || millis() - rtcWrittenAt > 600000UL) { rtcWrite(clkEpoch); rtcWritten = true; rtcWrittenAt = millis(); }
+  }
+  static uint32_t batAt = 0;
+  if (!batAt || millis() - batAt > 5000) {
+    batAt = millis(); uint8_t b[2];
+    if (i2cRead(ADDR_BQ27220, 0x2C, b, 2) == 0) { int p = b[0] | (b[1] << 8); batPct = p > 100 ? 100 : p; }
+    uint8_t st; if (i2cRead(ADDR_BQ25896, 0x0B, &st, 1) == 0) { int cs = (st >> 3) & 3; batCharging = cs == 1 || cs == 2; }   // 1 = pre-charge, 2 = fast charge
+  }
+}
+// Battery shape for the top right corner: white outline, green fill for the charge (yellow below 30%, red below 15%), black for the empty part,
+// a white "+" on it while charging. Drawn only when switched on in the setup page.
+static void drawBatIcon(lgfx::LovyanGFX &D, int W) {
+  if (!S.batIcon || batPct < 0) return;
+  const int w = 28, h = 12, x = W - w - 5, y = 2;
+  uint16_t c = batPct > 30 ? TFT_GREEN : (batPct > 15 ? TFT_YELLOW : TFT_RED);
+  D.fillRect(x - 1, y - 1, w + 5, h + 2, TFT_BLACK);
+  D.drawRect(x, y, w, h, TFT_WHITE); D.fillRect(x + w, y + 3, 2, h - 6, TFT_WHITE);
+  D.fillRect(x + 1, y + 1, w - 2, h - 2, TFT_BLACK);
+  int fw = (w - 4) * batPct / 100; if (fw < 1 && batPct > 0) fw = 1;
+  D.fillRect(x + 2, y + 2, fw, h - 4, c);
+  if (batCharging) { D.setTextSize(1); D.setTextColor(TFT_WHITE); D.setCursor(x + w / 2 - 2, y + 2); D.print("+"); }
+}
+// "Mon 23 Nov 14:05  87%+" (or just the time) drawn with its left edge at x; returns the width in pixels
+static int drawClockBat(lgfx::LovyanGFX &D, int x, int y, uint16_t bg, bool withDate, bool rightEdge = false) {   // rightEdge: x is where the text ends
+  char t[24] = "--:--", b[10] = "";
+  uint32_t u = utcNow();
+  if (u) { LocalTime lt = clockLocal(u, S.utcOffset, S.usDst); if (withDate) clockFmt(t, sizeof t, lt); else snprintf(t, sizeof t, "%02d:%02d", lt.hour, lt.min); }
+  else if (withDate) strcpy(t, "no time yet");
+  if (batPct >= 0 && !S.batIcon) snprintf(b, sizeof b, " %d%%%s", batPct, batCharging ? "+" : "");
+  if (rightEdge) x -= 6 * ((int)strlen(t) + (int)strlen(b));
+  D.setTextSize(1); D.setCursor(x, y); D.setTextColor(TFT_WHITE, bg); D.print(t);
+  if (b[0]) { uint16_t c = batCharging ? TFT_CYAN : (batPct > 30 ? TFT_GREEN : (batPct > 15 ? TFT_YELLOW : TFT_RED)); D.setTextColor(c, bg); D.print(b); }
+  return 6 * ((int)strlen(t) + (int)strlen(b));
+}
 
 static String root;
 static uint8_t *buf = nullptr;
@@ -340,7 +402,8 @@ static void drawFullList(lgfx::LovyanGFX &D, int W, int H) {
   D.printf("FULL LIST   %d heard   %s first", nOrd, (sortByDistance && gps.fix.valid) ? "nearest" : "most recent");
   bool follow = lastKnobAt == 0 || millis() - lastKnobAt > FOLLOW_PAUSE_MS;
   const char *ft = follow ? "FOLLOWING NEW PACKETS" : "HOLDING (knob in use)";
-  D.setTextColor(follow ? TFT_GREEN : TFT_YELLOW); D.setCursor(W - 6 * (int)strlen(ft) - 4, 3); D.print(ft);
+  D.setTextColor(follow ? TFT_GREEN : TFT_YELLOW); D.setCursor(W - 6 * (int)strlen(ft) - 4 - (S.batIcon ? 36 : 0), 3); D.print(ft);
+  drawClockBat(D, 222, 3, C_BAR, true); drawBatIcon(D, W);
   D.drawFastVLine(LW, top, H - top - 12, TFT_DARKGREY);
   int sel = selIndex(), first = constrain(sel - rows / 2, 0, std::max(0, nOrd - rows));
   if (nOrd == 0) { D.setTextColor(C_GRAY); D.setCursor(10, 60); D.print("No stations heard yet."); }
@@ -511,6 +574,8 @@ static void render() {
   }
   D.setCursor(x0 + 2, H - 10);
   D.printf(" %.4f %.4f ", clat, clon);
+  drawClockBat(D, W - 3, H - 10, TFT_BLACK, true, true);
+  drawBatIcon(D, W);
   if (mainMenu.on) drawMainMenu(D);
   if (fbOk) fb.pushSprite(0, 0);
 }
@@ -520,6 +585,7 @@ void setup() {
   S = loadSettings();
   M.setCall(S.call); msgLoad(); M.restoreTimers(millis()); M.startIds(esp_random());
   Wire.begin(PIN_SDA, PIN_SCL, 400000);
+  rtcRead();                                // the time the RTC chip kept, until GPS gives a better one
   bool xpOk = xp.begin(ADDR_XL9555);
   if (xpOk) {
     const uint8_t on[] = {XP_LORA_EN, XP_GPS_EN, XP_GPS_RST, XP_KB_EN, XP_KB_RST, XP_SD_EN, XP_GPIO_EN};
@@ -588,16 +654,35 @@ static void saveSettings(const PagerSettings &x) {
   p.putString("call", x.call); p.putString("path", x.path); p.putString("table", t); p.putString("sym", y); p.putString("comment", x.comment);
   p.putString("txdbm", String(x.txDbm)); p.putString("moving", String(x.movingSec)); p.putString("stationary", String(x.stationaryMin));
   p.putString("movem", String(x.moveMetres)); p.putString("auto", x.autoAtBoot ? "1" : "0"); p.putString("haptic", x.haptic ? "1" : "0");
-  p.putString("bright", String(x.brightness)); p.end();
+  p.putString("bright", String(x.brightness)); p.putString("tz", String(x.utcOffset)); p.putString("dst", x.usDst ? "1" : "0"); p.putString("baticon", x.batIcon ? "1" : "0"); p.putString("dim", String(x.dimSec)); p.putString("off", String(x.offSec)); p.end();
 }
 static PagerSettings loadSettings() {
   PagerSettings x; Preferences p; p.begin("pgr-aprs", true);
   std::string err;
-  bool ok = settingsParse([&](const char *k, std::string &v) { if (!p.isKey(k)) return false; v = p.getString(k, "").c_str(); return true; }, x, err);
+  bool ok = settingsParse([&](const char *k, std::string &v) {
+    if (!p.isKey(k)) { if (!strcmp(k, "tz")) { v = "-8"; return true; } if (!strcmp(k, "dst") || !strcmp(k, "baticon")) { v = "1"; return true; } if (!strcmp(k, "dim")) { v = "60"; return true; } if (!strcmp(k, "off")) { v = "300"; return true; } return false; }   // settings saved by an older build: default clock
+    v = p.getString(k, "").c_str(); return true; }, x, err);
   p.end();
   return ok ? x : PagerSettings();            // nothing saved yet, or damaged: the defaults
 }
+// ---- Screen timeout: dims, then the backlight goes off. No lock screen: any key or knob turn brings it back at once, showing what was there.
+// When the backlight was fully off, that first touch only wakes the screen (a key pressed in a pocket does nothing); when merely dimmed it also acts.
+static int screenState = 0;                               // 0 full, 1 dim, 2 off
+static uint32_t lastActivity = 0;
+static bool screenTouch() {                                // returns true when the screen was off: the caller then ignores that key press
+  lastActivity = millis(); bool wasOff = screenState == 2;
+  if (screenState) { screenState = 0; tft.setBrightness(S.brightness); dirty = true; }
+  return wasOff;
+}
+static void screenTick() {
+  if (!S.dimSec && !S.offSec) { if (screenState) { screenState = 0; tft.setBrightness(S.brightness); } return; }
+  uint32_t idle = (millis() - lastActivity) / 1000;
+  int want = (S.offSec && idle >= (uint32_t)S.offSec) ? 2 : ((S.dimSec && idle >= (uint32_t)S.dimSec) ? 1 : 0);
+  if (want != screenState) { screenState = want; tft.setBrightness(want == 2 ? 0 : (want == 1 ? std::min(S.brightness, 20) : S.brightness)); }
+}
+static uint8_t keyFiltered() { uint8_t e = keys.poll(); if (e && screenTouch()) return 0; return e; }
 static void applySettings() {
+  screenState = 0; lastActivity = millis();
   tft.setBrightness(S.brightness);
   haptic.enabled = S.haptic; M.setCall(S.call);
   if (radioOk) radio->setOutputPower(S.txDbm);
@@ -865,7 +950,7 @@ void loop() {
       else if (f.length() > 12 && (uint8_t)f[0] == 0x3C && (uint8_t)f[1] == 0xFF && (uint8_t)f[2] == 0x01) {
         msg::Parsed pm = msg::parse(f.c_str() + 3, f.length() - 3);
         msg::Event ev = M.onRx(pm, millis(), epochNow(), (int)radio->getRSSI(), (int)lroundf(radio->getSNR() * 4.0f));
-        if (ev == msg::EV_NEW) { haptic.play(H_MESSAGE); ui.onIncoming(pm.from); if (!ui.active()) { static char note[40]; snprintf(note, sizeof note, "Message from %s", pm.from); say(note); } dirty = true; }
+        if (ev == msg::EV_NEW) { screenTouch(); haptic.play(H_MESSAGE); ui.onIncoming(pm.from); if (!ui.active()) { static char note[40]; snprintf(note, sizeof note, "Message from %s", pm.from); say(note); } dirty = true; }
         else if (ev == msg::EV_ACKED) { haptic.play(H_ACK); ui.dirty = true; }
         else if (ev == msg::EV_REJECTED) { haptic.play(H_ERROR); ui.dirty = true; }
       }
@@ -875,6 +960,14 @@ void loop() {
 
   if (setupMode) { setupTick(); return; }   // while the phone setup screen is open, nothing else runs (receiving still does)
 
+  screenTick();
+  { static uint32_t clkTickAt = 0; static int lastMin = -1, lastPct = -2; static bool lastChg = false;
+    if (millis() - clkTickAt > 1000) {
+      clkTickAt = millis(); clockTick();
+      uint32_t u = utcNow(); int mn = u ? (int)(u / 60) : -1;
+      if (mn != lastMin || batPct != lastPct || batCharging != lastChg) { lastMin = mn; lastPct = batPct; lastChg = batCharging; if (ui.active()) ui.dirty = true; else dirty = true; }
+    } }
+
   // the keyboard chip can lose its setup (a radio transmission right next to it, a power glitch): check once a second and set it up again
   static uint32_t kbChecked = 0; static int kbResets = 0;
   if (millis() - kbChecked > 1000) {
@@ -883,7 +976,7 @@ void loop() {
   }
 
   // keyboard: C centres on my GPS position, L steps the station view (list + map / map only / hidden), S changes the list order
-  if (uint8_t e = keys.poll()) {
+  if (uint8_t e = keyFiltered()) {
     Serial.printf("key raw=%u %s char='%c' ui=%d\n", e & 0x7F, (e & 0x80) ? "down" : "up", keyLookup(e & 0x7F).ch ? keyLookup(e & 0x7F).ch : '?', (int)ui.scr);
     if (ui.active()) { ui.key(e & 0x7F, e & 0x80); if (!ui.active()) dirty = true; }
     else if (mainMenu.on) {
@@ -907,12 +1000,16 @@ void loop() {
   // knob press: short = next knob mode, long (>= 600 ms) = centre on my GPS position
   static bool wasPressed = false; static uint32_t pressedAt = 0; static bool longDone = false;
   bool pressed = digitalRead(PIN_ROT_PRESS) == LOW;
+  { static bool ignorePress = false;                       // a press that only woke the screen is ignored until the knob is let go
+    if (pressed && !wasPressed && screenTouch()) ignorePress = true;
+    if (ignorePress) { if (!pressed) ignorePress = false; pressed = false; } }
   if (pressed && !wasPressed) { pressedAt = millis(); longDone = false; }
   if (pressed && !longDone && millis() - pressedAt >= 600) { longDone = true; if (mainMenu.on) { mainMenu.on = false; dirty = true; haptic.play(H_CLICK); } else if (ui.active()) { ui.press(true); haptic.play(H_CLICK); if (!ui.active()) dirty = true; } else if (stView == 3) { stView = 0; haptic.play(H_CLICK); say(VIEW_NAME[0]); dirty = true; } else centerOnGps(); }
   if (!pressed && wasPressed && !longDone) { if (mainMenu.on) { haptic.play(H_CLICK); mainMenuAct(mainMenu.act[mainMenu.sel]); } else if (ui.active()) { ui.press(false); haptic.play(H_TICK); if (!ui.active()) dirty = true; } else if (stView == 3) { haptic.play(H_CLICK); ui.open(); ui.openCompose(selCall); } else { mode = nextMode(mode); haptic.play(H_TICK); dirty = true; } }
   wasPressed = pressed;
 
   int32_t d; noInterrupts(); d = knobSteps; knobSteps = 0; interrupts();
+  if (d && screenTouch()) d = 0;
   if (d && mainMenu.on) { mainMenu.sel = constrain(mainMenu.sel + (d > 0 ? -1 : 1), 0, mainMenu.n - 1); haptic.play(H_TICK); dirty = true; }
   else if (d && ui.active()) { for (int i = 0, n = abs(d); i < n; i++) ui.knob(d > 0 ? 1 : -1); haptic.play(H_TICK); }
   else if (d) {

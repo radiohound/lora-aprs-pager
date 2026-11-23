@@ -30,8 +30,15 @@ firmware's demo mode (`DEMO MODE` is shown on the screen, and nothing is transmi
   ASCII emoticons drawn as pictures on the screen (the text on the air stays plain ASCII), RSSI and SNR on received messages.
   Messages are kept in the pager's flash.
 - **Setup from a phone.** Press Enter: the pager opens its own WiFi hotspot (random password, QR code on the screen) and serves a
-  setup page at `http://192.168.4.1`: call sign, symbol (with a picker), comment, path, power, beacon intervals, haptics, brightness.
+  setup page at `http://192.168.4.1`: call sign, symbol (with a picker), comment, path, power, beacon intervals, haptics, brightness, screen timeout, time zone and the battery shape.
   The hotspot is off again when you leave the screen.
+- **Clock and battery.** Date and time at the bottom right of the map, from GPS time (kept in the pager's RTC chip, so it is also right at power-on
+  without a fix); set your time zone as hours from UTC (California is -8) and tick the box to add an hour in US daylight saving time. An optional
+  battery shape in the top right corner shows the charge in green (yellow below 30 %, red below 15 %) and a `+` while charging.
+- **Screen timeout.** The screen dims, then the backlight goes off (both times are settable, or never). There is no lock screen: any key or knob turn
+  wakes it at once, showing what was there. After the backlight was fully off, that first touch only wakes it. A new message also wakes it.
+- **Mic-E** position packets (used by many handheld and mobile radios) are decoded, including blanked-digit position ambiguity; checked against
+  301 real packets with an independent decoder.
 - **Haptic feedback** on knob clicks, new messages, acks and errors.
 - **Screenshots over USB** for documentation (`tools/screenshot.py`).
 
@@ -156,8 +163,8 @@ They cover the APRS frame parser and beacon builder, GPS sentences, distance and
 
 ## Not done yet
 
-Mic-E and other position formats are not decoded (those stations do not appear); bulletins, group text and meeting-spot objects are
-designed but not built; the battery level is not shown on screen; the LilyGO menu cannot be kept alongside this application (it needs a
+Other position formats (weather, telemetry and others) are not decoded; bulletins, group text and meeting-spot objects are
+designed but not built; the LilyGO menu cannot be kept alongside this application (it needs a
 two-app flash layout); the tocall is the experimental `APZPGR` (a registered one is to be requested); vector maps are a later phase.
 
 

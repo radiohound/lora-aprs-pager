@@ -25,6 +25,24 @@ int main() {
   expect(std::string(p.call) == "K6ATV-10", "call");
   expect(near(p.lat, 37 + 20.5 / 60) && near(p.lon, -(121 + 54.3 / 60)), "uncompressed coordinates");
   expect(p.table == '/' && p.sym == '#', "symbol");
+  // Mic-E (examples from Dire Wolf's decoder notes): N 42 37.1200, W 071 20.8300, 0 mph, course 151
+  expect(parse("WB2OSZ>TRSW1R,WIDE1-1,WIDE2-2:`c0ol!O[/>=\r", p), "mic-e parses");
+  expect(std::string(p.call) == "WB2OSZ" && near(p.lat, 42 + 37.12 / 60, 1e-4) && near(p.lon, -(71 + 20.83 / 60), 1e-4), "mic-e position");
+  expect(p.table == '/' && p.sym == '[', "mic-e symbol");
+  expect(std::string(p.comment).rfind("151/000", 0) == 0, "mic-e course and speed in the comment");
+  // N 44 27.5000, E 069 42.8300, 76 MPH, course 196, alt 282 ft: destination TTRW5? is invalid in the notes, so use a known good one
+  expect(parse("N1ZZN-9>T2SP0W:`c_Vm6hk/`\"49}Jeff Mobile_%", p), "mic-e Yaesu parses");
+  expect(near(p.lat, 42 + 30.07 / 60, 1e-4) && near(p.lon, -(71 + 7.58 / 60), 1e-4), "mic-e Yaesu position");
+  expect(std::string(p.comment).find("Jeff Mobile") != std::string::npos && std::string(p.comment).find('_') == std::string::npos && std::string(p.comment).find('}') == std::string::npos, "mic-e comment cleaned");
+  expect(parse("N0CALL>ABCDEF:'abc123R/text", p) == false || true, "garbage destination does not crash");
+  expect(!parse("N0CALL>ABC:`c_Vm6hk/", p), "mic-e with a short destination is refused");
+  expect(!parse("N0CALL>T2SP0W:`c_V", p), "mic-e with a short info field is refused");
+  // real packets from the live APRS-IS feed (2026-11-23), positions checked against the aprslib decoder
+  expect(parse("KF9AF-9>TSSZLZ,WIDE1-1,WIDE2-1,qAR,N3IVK-10:`uD\x1cq>Pk/`\"76}_1", p) && near(p.lat, 43.58333, 2e-4) && near(p.lon, -89.75, 2e-4) && p.sym == 'k', "real mic-e, 3 blanked digits (box centre)");
+  expect(parse("KC4VKG-7>R9PVLZ,WIDE1-1,WIDE2-1,qAR,N2EDX-10:`lWVl\"][/`\"3{}Patrick kc4vkg@example.org", p) && near(p.lat, 29.10833, 2e-4) && near(p.lon, -80.99167, 2e-4), "real mic-e, 2 blanks, west");
+  expect(parse("PR2KW>R3S22Z,PY2KAS-15,WIDE2*,qAR,PR2AA-10:'J>ql \x1cK\\]=", p) && near(p.lat, -23.5375, 2e-4) && near(p.lon, -46.58083, 2e-4) && p.table == '\\' && p.sym == 'K', "real mic-e, southern hemisphere, overlay table");
+  expect(parse("KD9DDE-10>T5ZZLZ,WIDE1-1,WIDE2-1,qAR,KD9CCE-10:`uX\x1cl!*-/`\"9N}FIXED_%", p) && near(p.lat, 45.5, 2e-4) && near(p.lon, -89.5, 2e-4), "real mic-e, 4 blanks");
+  expect(parse("IZ1CQY>TUPSYL,WIDE1-1,WIDE2-1,qAR,IR1UFB:`};Dl \x1c-/`IR1UGN 430.425 + 5 MHZ SUB 82.5_4", p) && near(p.lat, 45.06583, 2e-4) && near(p.lon, 7.52417, 2e-4), "real mic-e, eastern hemisphere");
   // '=' (messaging capable), and '@' with timestamp
   expect(parse("K6ATV-4>APLRT1:=3720.50N/12154.30W>", p) && p.sym == '>', "= type");
   expect(parse("K6ATV-4>APLRT1:@092345z3720.50N/12154.30W>x", p) && near(p.lat, 37.3417), "@ with timestamp");

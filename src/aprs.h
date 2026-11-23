@@ -1,6 +1,6 @@
 // LoRa APRS frame -> station position. Plain C++ (no Arduino), tested on the Mac in test/host/test_aprs.cpp.
 // Frame on the air: 3C FF 01 + TNC2 text "SRC>DST,PATH:info". Handles uncompressed and compressed positions
-// (! = / @ and objects ;). Mic-E and other formats are ignored for now.
+// (! = / @ and objects ;) and Mic-E (` and '). Other formats are ignored.
 #pragma once
 #include <algorithm>
 #include <cstring>
@@ -58,6 +58,54 @@ inline bool position(const char *p, size_t n, AprsPos &o) {
   }
   return false;
 }
+// Mic-E: the latitude is hidden in the six destination characters, the longitude and speed/course are bytes in the info field.
+// Same rules as Dire Wolf's decoder. dest = the destination call (at least 6 characters), info = text after the colon (info[0] is ` or ').
+inline int miceDigit(char c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'A' && c <= 'J') return c - 'A';
+  if (c >= 'P' && c <= 'Y') return c - 'P';
+  return 0;                                                       // K, L, Z = space (position ambiguity): counts as 0
+}
+inline bool miceDestChar(char c) { return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'L') || (c >= 'P' && c <= 'Z'); }
+inline bool miceHigh(char c) { return c >= 'P' && c <= 'Z'; }
+inline bool micE(const char *dest, size_t dl, const unsigned char *info, size_t m, AprsPos &o) {
+  if (dl < 6 || m < 9) return false;
+  for (int i = 0; i < 6; i++) if (!miceDestChar(dest[i])) return false;
+  double lat = miceDigit(dest[0]) * 10 + miceDigit(dest[1]) + (miceDigit(dest[2]) * 1000 + miceDigit(dest[3]) * 100 + miceDigit(dest[4]) * 10 + miceDigit(dest[5])) / 6000.0;
+  int amb = 0; for (int i = 5; i >= 2 && (dest[i] == 'K' || dest[i] == 'L' || dest[i] == 'Z'); i--) amb++;   // blanked digits: the position is only known to a box
+  double halfBox = amb >= 4 ? 0.5 : (amb ? 0.05 * pow(10.0, amb - 1) / 60.0 : 0);                                                 // half its size in degrees: report the middle of the box
+  lat += halfBox;
+  if (!miceHigh(dest[3])) lat = -lat;                              // 0-9 and A-L: south; P-Z: north
+  int d = info[1] - 28; if (miceHigh(dest[4])) d += 100;             // longitude offset
+  if (d >= 190) d -= 190; else if (d >= 180) d -= 80;
+  int mi = info[2] - 28; if (mi >= 60) mi -= 60;
+  int hu = info[3] - 28;
+  if (info[1] < 28 || info[2] < 28 || info[3] < 28 || d < 0 || d > 179 || mi < 0 || mi > 59 || hu < 0 || hu > 99) return false;
+  double lonMin = mi + hu / 100.0;
+  if (amb) { double u = amb >= 4 ? 60.0 : 0.1 * pow(10.0, amb - 1); lonMin = floor(lonMin / u + 1e-9) * u + u / 2; }   // the longitude is blurred the same way: cut to the box, then its middle
+  double lon = d + lonMin / 60.0;
+  if (miceHigh(dest[5])) lon = -lon;                               // 0-9 and A-L: east; P-Z: west
+  if (lat < -90 || lat > 90) return false;
+  o.lat = lat; o.lon = lon; o.sym = (char)info[7]; o.table = (char)info[8];
+  if (o.table != '/' && o.table != '\\' && !(o.table >= 'A' && o.table <= 'Z') && !(o.table >= '0' && o.table <= '9')) o.table = '/';
+  int sp = (info[4] - 28) * 10 + (info[5] - 28) / 10; if (sp >= 800) sp -= 800;      // knots
+  int co = ((info[5] - 28) % 10) * 100 + (info[6] - 28); if (co >= 400) co -= 400;   // degrees, 0 = unknown
+  char com[64]; size_t k = 0;
+  if (sp > 0 || co > 0) k = snprintf(com, sizeof com, "%03d/%03d", co == 360 ? 0 : co, sp);   // course/speed like other APRS comments
+  const char *c = (const char *)info + 9; size_t cn = m - 9;
+  while (cn && (c[cn - 1] == '\r' || c[cn - 1] == '\n')) cn--;
+  char lead = 0;
+  if (cn && (*c == ' ' || *c == '>' || *c == ']' || *c == '`' || *c == '\'')) { lead = *c; c++; cn--; }   // the radio-type character
+  if (cn >= 4 && c[3] == '}') { c += 4; cn -= 4; }                                                          // altitude: three base-91 characters and }
+  if (cn >= 2 && c[cn - 2] == '_') cn -= 2;                                                                 // Yaesu type suffix
+  else if (cn >= 1 && (lead == '>' || lead == ']') && (c[cn - 1] == '=' || c[cn - 1] == '^')) cn--;       // Kenwood type suffix
+  char all[64]; size_t al = 0; memcpy(all, com, k); al = k;
+  if (k && cn && c[0] != ' ') all[al++] = ' ';                                                              // keep "151/000" apart from the text
+  if (al + cn >= sizeof all) cn = sizeof all - 1 - al;
+  if (al + cn >= sizeof o.comment) cn = sizeof o.comment - 1 - al;
+  memcpy(all + al, c, cn); setComment(o, all, al + cn);
+  return true;
+}
 }  // namespace aprs_detail
 
 inline bool aprsParse(const unsigned char *frame, size_t len, AprsPos &out) {
@@ -83,6 +131,10 @@ inline bool aprsParse(const unsigned char *frame, size_t len, AprsPos &out) {
       if (info[10] != '*' && info[10] != '_') return false;
       memcpy(out.call, nm, 10); out.object = true;
       return aprs_detail::position(info + 18, m - 18, out);
+    }
+    case '`': case '\'': {                                                                    // Mic-E: the position is in the destination field
+      const char *d = gt + 1; size_t dl = 0; while (d + dl < colon && d[dl] != ',') dl++;
+      return aprs_detail::micE(d, dl, (const unsigned char *)info, m, out);
     }
     default: return false;
   }

@@ -5,7 +5,7 @@
 static int fails = 0;
 static void expect(bool c, const char *w) { if (!c) { fails++; printf("FAIL: %s\n", w); } }
 using M = std::map<std::string, std::string>;
-static M good() { return {{"call","k6atv-6"},{"path","wide1-1"},{"table","/"},{"sym","["},{"comment","T-LoRa Pager"},{"txdbm","20"},{"moving","60"},{"stationary","10"},{"movem","150"},{"auto","0"},{"haptic","1"},{"bright","160"}}; }
+static M good() { return {{"call","k6atv-6"},{"path","wide1-1"},{"table","/"},{"sym","["},{"comment","T-LoRa Pager"},{"txdbm","20"},{"moving","60"},{"stationary","10"},{"movem","150"},{"auto","0"},{"haptic","1"},{"bright","160"},{"tz","-8"},{"dst","1"},{"baticon","1"},{"dim","60"},{"off","300"}}; }
 static bool parse(const M &m, PagerSettings &s, std::string &err) { return settingsParse([&](const char *k, std::string &v) { auto i = m.find(k); if (i == m.end()) return false; v = i->second; return true; }, s, err); }
 int main() {
   PagerSettings s; std::string err;
@@ -23,7 +23,7 @@ int main() {
   bad("comment", "0123456789012345678901234567890123456789012345", "long comment refused");
   bad("txdbm", "23", "23 dBm refused"); bad("txdbm", "1", "1 dBm refused"); bad("txdbm", "abc", "non-number refused"); bad("txdbm", "20x", "trailing junk refused"); bad("txdbm", "", "empty number refused");
   bad("moving", "29", "moving too fast refused"); bad("moving", "3601", "moving too slow refused"); bad("stationary", "0", "0 min refused"); bad("stationary", "121", "121 min refused");
-  bad("movem", "19", "19 m refused"); bad("auto", "2", "auto 2 refused"); bad("bright", "9", "dark refused"); bad("bright", "256", "256 refused");
+  bad("movem", "19", "19 m refused"); bad("auto", "2", "auto 2 refused"); bad("bright", "9", "dark refused"); bad("bright", "256", "256 refused"); bad("tz", "15", "tz 15 refused"); bad("tz", "-13", "tz -13 refused"); bad("dst", "2", "dst 2 refused"); bad("baticon", "2", "baticon 2 refused"); bad("dim", "-1", "dim -1 refused"); bad("off", "3601", "off 3601 refused");
   { M m = good(); m.erase("bright"); std::string e; PagerSettings t; expect(!parse(m, t, e) && e.find("bright") != std::string::npos, "missing field named in the error"); }
   { M m = good(); m["table"] = "L"; m["sym"] = "&"; PagerSettings t; std::string e; expect(parse(m, t, e) && t.table == 'L' && t.sym == '&', "overlay symbol L& accepted"); }
   { M m = good(); m["table"] = "\\"; m["sym"] = "&"; PagerSettings t; std::string e; expect(parse(m, t, e) && t.table == '\\', "alternate table accepted"); }

@@ -209,6 +209,7 @@ struct MsgUi {
     D.setTextColor(M.callOk() ? C_GRAY : TFT_ORANGE, C_BAR); D.setCursor(300, 4);
     if (M.callOk()) D.printf("as %s", M.myCall()); else D.print("set your call sign: Enter on the map");
     if (unread > 0) { D.setTextColor(TFT_YELLOW, C_BAR); D.setCursor(220, 4); D.printf("%d unread", unread); }
+    drawClockBat(D, 372, 4, C_BAR, false); drawBatIcon(D, 480);
   }
   void footer(lgfx::LovyanGFX &D, const char *hint) {
     D.fillRect(0, 210, 480, 12, C_BAR); D.setTextSize(1);

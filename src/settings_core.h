@@ -20,6 +20,11 @@ struct PagerSettings {
   bool autoAtBoot = false;         // start auto-beaconing at power-on
   bool haptic = true;
   int brightness = 160;
+  int utcOffset = -8;              // hours from UTC for the clock on the screen (Pacific standard time)
+  bool usDst = true;               // add one hour in US daylight saving time
+  int dimSec = 60;                 // screen dims after this many seconds without a key or knob (0 = never)
+  int offSec = 300;                // backlight off after this many seconds (0 = never); any key or knob wakes it at once, there is no lock screen
+  bool batIcon = true;             // battery shape in the top right corner
 };
 
 namespace settings_detail {
@@ -70,7 +75,7 @@ inline bool settingsValidSymbol(char table, char code) {
 }
 
 // Read all fields through get(name, value). Returns true and fills `out` only if EVERY field is valid; otherwise `err` says
-// which one is wrong and `out` is left untouched. Fields: call path table sym comment txdbm moving stationary movem auto haptic bright
+// which one is wrong and `out` is left untouched. Fields: call path table sym comment txdbm moving stationary movem auto haptic bright tz dst baticon dim off
 using SettingsGet = std::function<bool(const char *, std::string &)>;
 inline bool settingsParse(const SettingsGet &get, PagerSettings &out, std::string &err) {
   using namespace settings_detail;
@@ -104,6 +109,13 @@ inline bool settingsParse(const SettingsGet &get, PagerSettings &out, std::strin
   if (!num("haptic", 0, 1, b, "Haptics: 0 or 1")) return false;
   n.haptic = b;
   if (!num("bright", 10, 255, n.brightness, "Brightness: 10 to 255")) return false;
+  if (!num("tz", -12, 14, n.utcOffset, "Time zone: -12 to 14 hours from UTC")) return false;
+  if (!num("dst", 0, 1, b, "Daylight saving: 0 or 1")) return false;
+  n.usDst = b;
+  if (!num("dim", 0, 3600, n.dimSec, "Dim after: 0 to 3600 seconds")) return false;
+  if (!num("off", 0, 3600, n.offSec, "Screen off after: 0 to 3600 seconds")) return false;
+  if (!num("baticon", 0, 1, b, "Battery icon: 0 or 1")) return false;
+  n.batIcon = b;
   out = n; return true;
 }
 
@@ -117,8 +129,8 @@ inline std::string settingsToJson(const PagerSettings &s) {
   std::string cm = settingsJsonEscape(s.comment), pa = settingsJsonEscape(s.path);
   char t[3] = {s.table, 0, 0}; std::string tb = settingsJsonEscape(t); char y[2] = {s.sym, 0}; std::string sy = settingsJsonEscape(y);
   snprintf(b, sizeof b, "{\"call\":\"%s\",\"path\":\"%s\",\"table\":\"%s\",\"sym\":\"%s\",\"comment\":\"%s\",\"txdbm\":%d,\"moving\":%d,"
-           "\"stationary\":%d,\"movem\":%d,\"auto\":%d,\"haptic\":%d,\"bright\":%d}",
+           "\"stationary\":%d,\"movem\":%d,\"auto\":%d,\"haptic\":%d,\"bright\":%d,\"tz\":%d,\"dst\":%d,\"baticon\":%d,\"dim\":%d,\"off\":%d}",
            s.call, pa.c_str(), tb.c_str(), sy.c_str(), cm.c_str(), s.txDbm, s.movingSec, s.stationaryMin, s.moveMetres,
-           s.autoAtBoot ? 1 : 0, s.haptic ? 1 : 0, s.brightness);
+           s.autoAtBoot ? 1 : 0, s.haptic ? 1 : 0, s.brightness, s.utcOffset, s.usDst ? 1 : 0, s.batIcon ? 1 : 0, s.dimSec, s.offSec);
   return b;
 }
