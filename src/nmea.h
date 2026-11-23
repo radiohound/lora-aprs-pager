@@ -34,7 +34,7 @@ public:
   }
 private:
   char _l[128]; size_t _n = 0;
-  static double coord(const char *f, const char *hemi, bool lon) {
+  static double coord(const char *f, const char *hemi) {
     double v = atof(f); int dd = (int)(v / 100.0); double r = dd + (v - dd * 100.0) / 60.0;
     return (hemi[0] == 'S' || hemi[0] == 'W') ? -r : r;
   }
@@ -56,7 +56,7 @@ private:
     if (k < 8) return false;
     int q = atoi(f[6]); fix.sats = atoi(f[7]);
     if (q == 0 || !f[2][0] || !f[4][0]) { fix.valid = false; return true; }
-    fix.lat = coord(f[2], f[3], false); fix.lon = coord(f[4], f[5], true); fix.valid = true;
+    fix.lat = coord(f[2], f[3]); fix.lon = coord(f[4], f[5]); fix.valid = true;
     return true;
   }
 };

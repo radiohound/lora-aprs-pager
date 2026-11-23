@@ -2,5 +2,9 @@
 *.bin
 .DS_Store
 backups/
+__pycache__/
+*.pyc
+.vscode/
+*.png.tmp
 !src/symbols24.bin
 !src/emoji18.bin

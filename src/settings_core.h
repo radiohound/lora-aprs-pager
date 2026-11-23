@@ -41,7 +41,7 @@ inline std::string trim(const std::string &s) {
 inline std::string upper(std::string s) { for (auto &c : s) c = toupper((unsigned char)c); return s; }
 }  // namespace settings_detail
 
-// "K6ATV-6": 3-6 letters/digits with at least one of each, then an optional -0..15
+// "W1AW-7": 3-6 letters/digits with at least one of each, then an optional -0..15
 inline bool settingsValidCall(const std::string &c) {
   size_t dash = c.find('-'); std::string base = c.substr(0, dash);
   if (base.size() < 3 || base.size() > 6) return false;
@@ -49,7 +49,8 @@ inline bool settingsValidCall(const std::string &c) {
   for (char ch : base) { if (isalpha((unsigned char)ch) && isupper((unsigned char)ch)) l = true; else if (isdigit((unsigned char)ch)) d = true; else return false; }
   if (!l || !d) return false;
   if (dash == std::string::npos) return true;
-  int ssid; return settings_detail::toInt(c.substr(dash + 1), 0, 15, ssid) && c.size() - dash - 1 <= 2;
+  std::string sd = c.substr(dash + 1);
+  int ssid; return settings_detail::toInt(sd, 0, 15, ssid) && sd.size() <= 2 && !(sd.size() == 2 && sd[0] == '0');     // -0 to -15, no leading zero
 }
 // "WIDE1-1" or "WIDE1-1,WIDE2-1" or empty: up to 3 hops of A-Z, 0-9 and a dash
 inline bool settingsValidPath(const std::string &p) {
@@ -82,7 +83,7 @@ inline bool settingsParse(const SettingsGet &get, PagerSettings &out, std::strin
   PagerSettings n; std::string v;
   auto need = [&](const char *name) { if (!get(name, v)) { err = std::string("Missing field: ") + name; return false; } return true; };
   if (!need("call")) return false;
-  { std::string c = upper(trim(v)); if (!settingsValidCall(c)) { err = "Call sign: use letters and digits like K6ATV-6 (SSID 0-15)"; return false; } strcpy(n.call, c.c_str()); }
+  { std::string c = upper(trim(v)); if (!settingsValidCall(c)) { err = "Call sign: use letters and digits like W1AW-7 (SSID 0-15)"; return false; } strcpy(n.call, c.c_str()); }
   if (!need("path")) return false;
   { std::string p = upper(trim(v)); if (!settingsValidPath(p)) { err = "Path: up to 3 hops like WIDE1-1 or WIDE1-1,WIDE2-1"; return false; } strcpy(n.path, p.c_str()); }
   if (!need("table")) return false;

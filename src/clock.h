@@ -43,5 +43,12 @@ inline void clockFmt(char *out, size_t n, const LocalTime &t) {
   static const char *M[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
   snprintf(out, n, "%s %d %s %02d:%02d", D[t.wday % 7], t.day, M[(t.month - 1 + 12) % 12], t.hour, t.min);
 }
+// Time of an event for the screen: "09:14" when it was today (local date), otherwise "Nov 22 09:14". now = 0 (clock not set): always with the date.
+inline void clockStamp(char *out, size_t n, int64_t epoch, int64_t now, int stdOffsetHours, bool usDst) {
+  static const char *M[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+  LocalTime e = clockLocal(epoch, stdOffsetHours, usDst);
+  if (now > 0) { LocalTime t = clockLocal(now, stdOffsetHours, usDst); if (t.year == e.year && t.month == e.month && t.day == e.day) { snprintf(out, n, "%02d:%02d", e.hour, e.min); return; } }
+  snprintf(out, n, "%s %d %02d:%02d", M[(e.month - 1 + 12) % 12], e.day, e.hour, e.min);
+}
 inline uint8_t clockToBcd(int v) { return (uint8_t)(((v / 10) << 4) | (v % 10)); }
 inline int clockFromBcd(uint8_t b) { return (b >> 4) * 10 + (b & 15); }

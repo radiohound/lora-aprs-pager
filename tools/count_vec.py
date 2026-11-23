@@ -1,7 +1,8 @@
 import gzip, math, sys, collections
 from pmtiles.reader import Reader, MmapSource
 import mapbox_vector_tile as mvt
-T="/Volumes/Terrain/california_r2_full/california_r2"
+if len(sys.argv) != 2: sys.exit("usage: count_vec.py <path prefix of the two PMTiles files, e.g. /data/california_r2>  (reads <prefix>_vector.pmtiles and <prefix>_vector_osm.pmtiles)")
+T=sys.argv[1]
 ARCH={"vector":T+"_vector.pmtiles","osm":T+"_vector_osm.pmtiles"}
 rd={}
 for k,p in ARCH.items():

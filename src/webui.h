@@ -27,7 +27,7 @@ button{font:inherit;padding:12px 18px;border-radius:10px;border:0;background:var
 <form id="f" onsubmit="return save(event)">
 <div class="card"><h2>Station</h2>
 <label for="call">Call sign</label><input type="text" id="call" maxlength="9" autocapitalize="characters" autocomplete="off" spellcheck="false">
-<small>With an SSID, like K6ATV-6. The pager will not transmit while this is N0CALL.</small>
+<small>With an SSID, like W1AW-7. The pager will not transmit while this is N0CALL.</small>
 <label for="comment">Comment</label><input type="text" id="comment" maxlength="43" autocomplete="off"><small>Up to 43 characters, shown next to your position.</small>
 <label for="path">Digipeater path</label><input type="text" id="path" maxlength="20" autocapitalize="characters" autocomplete="off" spellcheck="false"><small>Usually WIDE1-1.</small></div>
 

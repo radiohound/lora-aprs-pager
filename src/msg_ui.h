@@ -10,7 +10,7 @@ static const char *CANNED[] = {"OK", "QSL", "On my way", "Where are you?", "Runn
 static const int NCANNED = 6;
 static const uint16_t C_BG = TFT_BLACK, C_SEL = 0x0010, C_GRAY = 0x8410, C_BAR = 0x2104;
 
-static uint32_t epochNow() { return gps.fix.epoch; }
+static uint32_t epochNow() { return utcNow(); }          // the RTC-backed clock: right at power-on and with no GPS
 static const Station *stationFor(const char *call) {
   for (auto &st : stations) if (st.used && !strcasecmp(st.call, call)) return &st;
   return nullptr;
@@ -54,6 +54,10 @@ static void wrapInto(std::vector<std::string> &out, const std::string &t, size_t
     if (i + take < t.size()) { size_t sp = t.rfind(' ', i + take); if (sp != std::string::npos && sp > i) take = sp - i; }
     out.push_back(t.substr(i, take)); i += take; while (i < t.size() && t[i] == ' ') i++;
   }
+}
+static std::string stampText(uint32_t epoch) {            // "09:14  " (local time of the message), "" when its time is not known
+  if (!epoch) return "";
+  char b[24]; clockStamp(b, sizeof b, epoch, utcNow(), S.utcOffset, S.usDst); return std::string(b) + "  ";
 }
 static std::string ageText(uint32_t epoch) {
   uint32_t now = epochNow(); if (!epoch || !now || now < epoch) return "";
@@ -257,8 +261,8 @@ struct MsgUi {
       firstLine[i] = (int)ln.size();
       for (auto &s : w) ln.push_back({s, x.out ? (uint16_t)TFT_GREEN : (uint16_t)TFT_WHITE, x.out, (int)i, false, 18});
       std::string meta;
-      if (x.out) { meta = stateText(x, now); if (x.state == msg::S_QUEUED && heldBehind(th, i)) meta = "waiting for the earlier message"; }
-      else { std::string a = ageText(x.epoch), sig; if (x.rssi) { char b[40]; if (x.snr4) snprintf(b, sizeof b, "%d dBm  SNR %+.1f", x.rssi, x.snr4 / 4.0); else snprintf(b, sizeof b, "%d dBm", x.rssi); sig = b; } meta = a + (!a.empty() && !sig.empty() ? "  " : "") + sig; }
+      if (x.out) { meta = stampText(x.epoch) + stateText(x, now); if (x.state == msg::S_QUEUED && heldBehind(th, i)) meta = "waiting for the earlier message"; }
+      else { std::string a = stampText(x.epoch) + ageText(x.epoch), sig; if (x.rssi) { char b[40]; if (x.snr4) snprintf(b, sizeof b, "%d dBm  SNR %+.1f", x.rssi, x.snr4 / 4.0); else snprintf(b, sizeof b, "%d dBm", x.rssi); sig = b; } meta = a + (!a.empty() && !sig.empty() ? "  " : "") + sig; }
       ln.push_back({meta, x.out ? stateColor(x.state) : (uint16_t)0xC618, x.out, (int)i, true, 13});
       lastLine[i] = (int)ln.size() - 1;
     }

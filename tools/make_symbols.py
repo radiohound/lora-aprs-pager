@@ -7,7 +7,8 @@ Source sheets: the 48 px renderings (aprs-symbols-24-N@2x.png) of the aprs.fi sy
 Sheet 0 = primary table, sheet 1 = alternate table, sheet 2 = overlay characters (0-9, A-Z, drawn over an alternate-table symbol);
 16 columns x 6 rows, character c is cell ord(c) - 33 (94 cells used per sheet).
 Output record per symbol: 576 x RGB565 (little endian) then 576 x alpha (0..255) = 1728 bytes.  Layout: sheet 0 cells 0..93, then sheet 1, then sheet 2.
-Usage: tools/make_symbols.py <dir holding symbols-0.png and symbols-1.png> [out.bin]
+Usage: tools/make_symbols.py <dir holding symbols-0.png, symbols-1.png and symbols-2.png> [out.bin]
+Get the sheets from https://github.com/hessu/aprs-symbols (the png/aprs-symbols-24-N@2x.png files, N = 0, 1, 2) and copy them to symbols-N.png.
 """
 import struct, sys
 from PIL import Image

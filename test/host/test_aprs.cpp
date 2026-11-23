@@ -34,7 +34,7 @@ int main() {
   expect(parse("N1ZZN-9>T2SP0W:`c_Vm6hk/`\"49}Jeff Mobile_%", p), "mic-e Yaesu parses");
   expect(near(p.lat, 42 + 30.07 / 60, 1e-4) && near(p.lon, -(71 + 7.58 / 60), 1e-4), "mic-e Yaesu position");
   expect(std::string(p.comment).find("Jeff Mobile") != std::string::npos && std::string(p.comment).find('_') == std::string::npos && std::string(p.comment).find('}') == std::string::npos, "mic-e comment cleaned");
-  expect(parse("N0CALL>ABCDEF:'abc123R/text", p) == false || true, "garbage destination does not crash");
+  parse("N0CALL>ABCDEF:'abc123R/text", p);                       // a Mic-E with an invalid destination: must not crash (the result is not checked)
   expect(!parse("N0CALL>ABC:`c_Vm6hk/", p), "mic-e with a short destination is refused");
   expect(!parse("N0CALL>T2SP0W:`c_V", p), "mic-e with a short info field is refused");
   // real packets from the live APRS-IS feed (2026-11-23), positions checked against the aprslib decoder
@@ -58,7 +58,7 @@ int main() {
   expect(!parse("K6ATV-4>APLRT1:>status text", p), "status is not a position");
   expect(!parse("K6ATV-4>APLRT1:!9999.99N/18099.99W>", p), "out of range lat");
   expect(!parse("garbage", p), "garbage");
-  expect(!parse("K6ATV-4>APLRT1:!3720.50N/12154.30W>", p, true) == false, "sanity");
+  expect(parse("K6ATV-4>APLRT1:!3720.50N/12154.30W>", p, true), "sanity");
   { std::string f = std::string("\x3c\xff\x03") + "K6ATV-4>APLRT1:!3720.50N/12154.30W>"; expect(!aprsParse((const unsigned char *)f.data(), f.size(), p), "LACF frame ignored"); }
   expect(parse("K6ATV-4>APLRT1:!3720.50N/12154.30W>", p, false), "no header also accepted");
 

@@ -9,7 +9,7 @@ APRS messages with acknowledgements, all on the pager's own screen, rotary knob 
 
 ![Map and heard stations](docs/screenshots/demo-list-and-map.png)
 
-*The screenshots with stations and with the full list show **demo data**: simulated stations (`N0DEMO-1` to `-8`) around Golden Gate Park, produced by the
+*The screenshots with stations and with the full list show **demo data**: simulated stations (`N0DEMO-1` to `-8`) around the summit of Mount Diablo, produced by the
 firmware's demo mode (`DEMO MODE` is shown on the screen, and nothing is transmitted while it is on). The other pictures are real.*
 
 ## What it does
@@ -40,7 +40,9 @@ firmware's demo mode (`DEMO MODE` is shown on the screen, and nothing is transmi
 - **Mic-E** position packets (used by many handheld and mobile radios) are decoded, including blanked-digit position ambiguity; checked against
   301 real packets with an independent decoder.
 - **Haptic feedback** on knob clicks, new messages, acks and errors.
-- **Screenshots over USB** for documentation (`tools/screenshot.py`).
+- **Screenshots over USB** for documentation (`tools/screenshot.py`). The firmware also answers a few one-letter test commands on USB serial
+  (`S` screenshot, `M` open Messages, `G<lat>,<lon>,<zoom>` map position, `V<0-3>` station view, `C<call>` select a station, `X` close menus,
+  `D<lat>,<lon>` demo mode with simulated stations (never transmits), `B` read the battery gauge, `R` restart). Send them only from your own computer.
 
 The firmware only **reads** the SD card. Settings and messages live in the pager's own flash.
 
@@ -82,6 +84,15 @@ The rotary knob works everywhere on its own; the keyboard types text and gives s
 delete conversation, delete all, undo), `Backspace` = back, `M` = back to the map. Typing: hold `Alt` = digits and symbols (`* / + - = : ' " @ _ $ ; ? ! , .`), hold `Alt` and `Shift` together = `( ) < > [ ] \ # % & ^` and the back quote
 (so emoticons like `:)` and `<3` can be typed), tap `Shift` = the next letter is a capital.
 
+## Before you transmit
+
+This firmware **transmits** on 433.775 MHz (the LoRa APRS frequency) at up to 22 dBm. It is for **licensed amateur radio operators only**:
+- Use your own call sign. The pager will not transmit until you save one (it ships as `N0CALL`).
+- 433.775 MHz is hard-coded. Check that your licence and your country's band plan allow LoRa APRS on that frequency and at the power you set.
+- It beacons your **GPS position publicly**: anyone on the network can see where you are. Auto-beacon is off at every power-on unless you switch it on.
+- Messages are plain text. **Encryption is not allowed on amateur radio**, so none is offered.
+- You are responsible for your transmissions: check your local rules before use.
+
 ## Power
 
 - **Turn off:** Backspace, choose **Power off**, then **Yes, power off** (the menu starts on No). The pager stops the beacon, saves your
@@ -107,15 +118,19 @@ Things worth knowing (all found on the real hardware):
 
 ## Build and flash
 
+You need [PlatformIO](https://platformio.org/install) (the CLI or the VS Code extension), a LilyGO [T-LoRa Pager](https://lilygo.cc/) (433 MHz, SX1262) and a USB-C cable.
+Defaults you may want to change: the clock shows **US Pacific time** (set your own offset on the phone setup page) and the map starts centred on the San Francisco Bay Area until it has a GPS fix.
+
     pio run -e app                          # the application
     pio run -e app -t upload --upload-port <PORT>
 
 PlatformIO environments: `app` is the application, `pager` is the milestone-1 bring-up test,
-`bench` / `bench_tdeck` are the read-only tile benchmarks (see [docs/benchmarks.md](docs/benchmarks.md)).
+`bench` / `bench_tdeck` are the read-only tile benchmarks (see [docs/benchmarks.md](docs/benchmarks.md)). The last three, and `src/bench/`, are
+development builds you do not need to use the pager.
 
 **Before the first flash, back up the factory firmware** (the LilyGO menu is replaced by this application):
 
-    python esptool.py --chip esp32s3 --port <PORT> read_flash 0x0 0x1000000 pager-factory-16MB.bin
+    python -m esptool --chip esp32s3 --port <PORT> read_flash 0x0 0x1000000 pager-factory-16MB.bin
 
 Restore with `write_flash 0x0 pager-factory-16MB.bin`. LilyGO also publishes factory images in
 `Xinyuan-LilyGO/LilyGoLib/firmware`. **To flash, the pager must be in download mode:** hold BOOT, tap RST, release BOOT. After flashing,
@@ -135,13 +150,14 @@ Until then the pager listens and shows the map but will not transmit.
 
 `/LoRa_Tracker/Maps/<REGION>/<z>/<x>/<y>.png` or `.jpg`, 256 px tiles on a FAT32 card (the T-Deck's 128 GB FAT32 card mounts
 as SDHC and works). The first region folder found is used; zoom levels 6, 7, 8, 10, 12 and 14.
-The tile files are made elsewhere (the terrain pipeline); this repository only reads them.
+Any set of 256 px tiles in the standard `<z>/<x>/<y>` layout works: the tile packs made for the T-Deck LoRa APRS firmware, or tiles you render yourself
+(for example from OpenStreetMap with a tile-rendering tool, respecting the map data's licence and attribution). This firmware only reads the card.
 
 ## Tests
 
 The parsers and engines are plain C++ and are tested on a PC:
 
-    for t in aprs geo settings messaging emoticons textedit; do
+    for t in aprs geo settings messaging emoticons textedit clock; do
       c++ -std=c++17 -I src test/host/test_$t.cpp -o /tmp/test_$t && /tmp/test_$t; done
 
 They cover the APRS frame parser and beacon builder, GPS sentences, distance and bearing, the settings validation, the messaging engine

@@ -19,6 +19,12 @@ int main() {
   expect(clockUsDst(e - 1, -8) && !clockUsDst(e, -8), "DST end instant");
   LocalTime d = clockBreak(0); expect(d.year == 1970 && d.wday == 4, "epoch is a Thursday");
   LocalTime neg = clockLocal(3600, -8, false); expect(neg.year == 1969 && neg.month == 12 && neg.day == 31 && neg.hour == 17, "before 1970");
+  { int64_t now = clockDays(2026, 11, 23) * 86400 + 22 * 3600 + 5 * 60;                   // 14:05 Pacific on 23 Nov
+    char s[24]; clockStamp(s, sizeof s, now - 3600, now, -8, true); expect(!strcmp(s, "13:05"), "stamp today");
+    clockStamp(s, sizeof s, now - 86400, now, -8, true); expect(!strcmp(s, "Nov 22 14:05"), "stamp yesterday has the date");
+    clockStamp(s, sizeof s, now, 0, -8, true); expect(!strcmp(s, "Nov 23 14:05"), "stamp with no clock has the date");
+    int64_t late = clockDays(2026, 11, 24) * 86400 + 5 * 3600;                           // 21:00 on the 23rd Pacific, 05:00 UTC on the 24th
+    clockStamp(s, sizeof s, late, late + 60, -8, true); expect(!strcmp(s, "21:00"), "stamp uses the local date, not the UTC date"); }
   expect(clockToBcd(59) == 0x59 && clockFromBcd(0x23) == 23, "BCD");
   printf(fails ? "%d failed\n" : "clock: all passed\n", fails); return fails != 0;
 }

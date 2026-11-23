@@ -136,8 +136,7 @@ the map, arrows pan, press recentres. Debounce/direction need testing on the rea
 ## Send engine
 - Per-destination message numbers; retry with backoff. The classic AFSK schedule (WB4APR: start at 8 s, decaying) is too
   aggressive for SF9-SF12 LoRa (my inference; no published LoRa guidance found): start around 30 s and double up to a cap
-  (aprs.org message-issues.txt suggests 0, 15 s, 30 s, 1, 2, 4, 8, 16 min, then stop: take that shape but begin at 30 s; the
-  agent reading it did not give the page date), configurable, with the countdown to the next try shown; honour the 30 s duplicate window; an ack cancels retries; a rej stops them; a key stops retrying manually.
+  (aprs.org message-issues.txt suggests 0, 15 s, 30 s, 1, 2, 4, 8, 16 min, then stop: take that shape but begin at 30 s), configurable, with the countdown to the next try shown; honour the 30 s duplicate window; an ack cancels retries; a rej stops them; a key stops retrying manually.
 - Receive: ack every copy of a numbered message (30 s apart), show it once; never ack unnumbered, group or bulletin messages.
 - Queue persists across reboots. Path per message (default WIDE1-1, option direct).
 - Be polite on air: listen before talk where the radio supports it, rate limit, never ack bulletins.
@@ -151,7 +150,7 @@ short reference to an earlier message (its number and direction, "yours" or "min
 message 12 quoted from its own store. Saves roughly 20-60 bytes per quote; at SF12 about 1 symbol, roughly 33 ms, per payload byte
 (my estimate from the symbol count, not measured), so a 30-character quote saves about 0.8 s of airtime, plus fewer retries.
 - **Readable by others:** the token is plain text, so clients that do not understand it just show "re:12 OK on my way".
-- **Capability:** use the compact form only with stations known to understand it. Our firmware has its own registered tocall,
+- **Capability:** use the compact form only with stations known to understand it. Our firmware sends the experimental tocall `APZPGR` (no registered one yet),
   which the station table sees in each station's beacons. Otherwise send a short text fragment of the quote, or none.
 - **T-Deck:** needs extra code in Walter's fork to resolve references; not checked whether that fork stores message numbers.
   The stock firmware just shows the token.

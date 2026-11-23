@@ -2,8 +2,8 @@
 """Take a screenshot of the T-LoRa Pager running the application firmware, over USB.
 
 Usage: tools/screenshot.py [out.png] [--port /dev/cu.usbmodemXXXX] [--send 'V1\\nG37.77,-122.49,12\\n'] [--wait 1.5]
-Needs pyserial and Pillow. On this Mac: PYTHONPATH=$HOME/.platformio/penv/lib/python3.11/site-packages python3 tools/screenshot.py out.png
-(system python3 has Pillow, the PlatformIO venv has pyserial).
+Needs pyserial and Pillow (pip install pyserial pillow). The port is found automatically (an Espressif USB device; /dev/cu.usbmodem*, /dev/ttyACM*,
+or a COM port); give --port if you have more than one.
 The firmware answers an 'S' byte with its off-screen frame buffer. The port is opened WITHOUT touching DTR/RTS:
 setting them makes the ESP32-S3's USB-Serial/JTAG reset the chip.
 """
@@ -18,9 +18,14 @@ send = opt("--send"); wait = float(opt("--wait", "1.5"))
 skip = {opt("--send"), opt("--wait"), opt("--port")}
 args = [a for a in sys.argv[1:] if not a.startswith("--") and a not in skip]
 out = args[0] if args else "pager-screenshot.png"
-port = sys.argv[sys.argv.index("--port") + 1] if "--port" in sys.argv else (glob.glob("/dev/cu.usbmodem*") or [None])[0]
+def find_port():
+    from serial.tools import list_ports
+    for p in list_ports.comports():
+        if p.vid == 0x303A: return p.device                      # Espressif's USB vendor id (the pager's built-in USB)
+    return (glob.glob("/dev/cu.usbmodem*") + glob.glob("/dev/ttyACM*") or [None])[0]
+port = sys.argv[sys.argv.index("--port") + 1] if "--port" in sys.argv else find_port()
 if not port:
-    sys.exit("no /dev/cu.usbmodem* port found")
+    sys.exit("no pager port found: plug it in with USB, or give --port (for example --port COM5 or --port /dev/ttyACM0)")
 
 s = serial.Serial(port, 115200, timeout=0.5)
 s.reset_input_buffer()
