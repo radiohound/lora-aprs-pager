@@ -1,4 +1,4 @@
-# Energy saving on the LilyGO T-LoRa Pager
+# Low power on the LilyGO T-LoRa Pager
 
 What we measured and learned about where this device spends its battery, what we changed because of it, and what did not work.
 Everything here was measured on one pager (SX1262, 433 MHz, 1500 mAh cell) with the firmware in this repository. Numbers are rough
@@ -161,8 +161,12 @@ Measured, no change beyond noise:
 * **A restart can catch the GPS in backup.** Start-up therefore always sends the wake bytes.
 * The M10 key IDs and message layouts in `src/ubx.h` are from the u-blox M10 SPG 5.10 interface description (UBX-21035062) and are
   unit-tested in `test/host/test_ubx.cpp`.
-* Beacons use the most recent fix. With the GPS waking once a minute, a moving pager notices movement up to a minute late while the
-  screen is off. The poll interval is the constant `GPS_POLL_MS` in `src/app/app.cpp`.
+* **The wake interval is adaptive and a setting** (phone setup, "Battery, screen off"). While the pager is moving it wakes the GPS every
+  `gpsmv` seconds (default 60). Once two wake-ups in a row find it within 40 m of the previous fix, or find no fix at all (probably indoors and
+  not going anywhere), it backs off to `gpsst` minutes (default 5). A fix that shows movement brings the short interval back at once. The logic is
+  `src/gpsduty.h`, tested in `test/host/test_gpsduty.cpp`. "GPS sleeps while the screen is off" can be switched off to keep the GPS running.
+* Beacons use the most recent fix, so a beacon sent while the screen is off can be a little old, and a move that starts while it is in the
+  long interval is noticed at the next wake (up to `gpsst` minutes).
 
 ## Light sleep: things that bit us
 
@@ -170,6 +174,10 @@ Measured, no change beyond noise:
   processor wakes (a packet still pending on DIO1, a knob line held), its interrupt fires continuously and the interrupt watchdog
   resets the chip (`Interrupt wdt timeout on CPU1`). After waking, the firmware calls `gpio_wakeup_disable()` and restores each pin's
   edge type. Meshtastic's `sleep.cpp` handles the same trap (it masks the radio interrupt while the level wake is armed).
+* **Do not wake on the GPS serial line while the GPS is talking.** An overnight soak test of the adaptive-GPS build restarted 26 times, all
+  interrupt-watchdog resets inside `esp_light_sleep_start()`, soon after a GPS wake-up. The GPS line's level wake fired in a storm. The firmware
+  now has no wake on that line and does not light-sleep while the GPS is awake (its 6 to 30 s window). The restart list in `PW` (reason and
+  stage of each restart, kept in RTC memory) is what found this.
 * **Do not sleep with a packet already latched.** If DIO1 is high before sleeping, skip the sleep and service the radio.
 * **Never sleep with USB attached.** The serial port disappears. The firmware reads the charger's VBUS status and stays awake.
 * **The sleep-only pad setting (`gpio_sleep_set_direction`) worked for the SD chip-select but made the processor wake constantly when
@@ -207,8 +215,8 @@ From their `variants/esp32s3/tlora-pager` and `src/sleep.cpp` (read 2026-11-23, 
   state during deep sleep, or the +/-1 mAh error. Not resolved, so we do not treat 6 mA as exact.
 * **Real listening configuration.** The 6 mA figure has the GPS off and the radio in standby. Receiving adds about 6 mA, and the GPS
   duty cycle adds more. The measured result of the real build is below.
-* **No setting yet** for the GPS poll interval or for turning the GPS sleep off; there are serial test commands only.
-* **Beacon accuracy while the screen is off** depends on the GPS poll interval, as above.
+* **The adaptive GPS interval is untested against real movement** (host-tested logic only, and indoors on the author's pager). Its effect on the
+  24 mA figure has not been measured yet.
 
 ## Reproducing and testing
 
@@ -241,8 +249,8 @@ the screen off. One run, with the GPS waking once a minute (up to 30 s per wake)
 
 Compared with 65 mA before the work, that is a reduction of about 63%. It is above the 12 mA the pieces add up to in the best case
 (radio receiving, GPS off), so about 12 mA is still being spent somewhere. The most likely cause is the GPS: if it cannot get a fix
-(indoors) it stays on for the full 30 s window each minute, which is about half the time at roughly 20 mA. Things to try:
-* a longer `GPS_POLL_MS` (the constant in `src/app/app.cpp`),
+(indoors) it stays on for the full 30 s window each minute, which is about half the time at roughly 20 mA. Done since: the wake interval is now adaptive and a setting (see GPS). Still to try:
+* measuring the adaptive build, indoors and outdoors,
 * a shorter `GPS_ON_MAX_MS`, or giving up after a number of failed fixes,
-* a setting to switch the GPS off completely while the screen is off (then pin 12 and the other GPS pins must be floated, see "The leaks"),
-* measuring outdoors with a good fix, where the GPS window should be only a few seconds.
+* switching the GPS off completely while the screen is off (then pin 12 and the other GPS pins must be floated, see "The leaks"),
+* a motion sensor (the board has one) to wake the GPS instead of a timer.

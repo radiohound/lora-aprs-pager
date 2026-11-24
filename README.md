@@ -30,7 +30,7 @@ firmware's demo mode (`DEMO MODE` is shown on the screen, and nothing is transmi
   ASCII emoticons drawn as pictures on the screen (the text on the air stays plain ASCII), RSSI and SNR on received messages.
   Messages are kept in the pager's flash.
 - **Setup from a phone.** Press Enter: the pager opens its own WiFi hotspot (random password, QR code on the screen) and serves a
-  setup page at `http://192.168.4.1`: call sign, symbol (with a picker), comment, path, power, beacon intervals, haptics, brightness, screen timeout, time zone and the battery shape.
+  setup page at `http://192.168.4.1`: call sign, symbol (with a picker), comment, path, power, beacon intervals, haptics, brightness, screen timeout, time zone, the battery shape and how the GPS sleeps while the screen is off.
   The hotspot is off again when you leave the screen.
 - **Clock and battery.** Date and time at the bottom right of the map, from GPS time (kept in the pager's RTC chip, so it is also right at power-on
   without a fix); set your time zone as hours from UTC (California is -8) and tick the box to add an hour in US daylight saving time. An optional
@@ -38,8 +38,9 @@ firmware's demo mode (`DEMO MODE` is shown on the screen, and nothing is transmi
 - **Screen timeout.** The screen dims, then the backlight goes off (both times are settable, or never). There is no lock screen: any key or knob turn
   wakes it at once, showing what was there. After the backlight was fully off, that first touch only wakes it. A new message also wakes it.
 - **Low power with the screen off.** The processor light-sleeps between events and still hears every packet; the SD card and the display panel are
-  powered down; the GPS sleeps and wakes about once a minute for a fix (so a beacon sent while the screen is off uses a position up to a minute
-  old). Measured on one pager: **about 24 mA with the screen off, against about 65 mA before** (see [Battery life](#battery-life)). USB disables
+  powered down; the GPS sleeps and wakes now and then for a fix, **adaptively**: every minute while you are moving, and every few minutes once two fixes in a row
+  show you have not moved (or it cannot see the sky). Both times, and an off switch, are in the phone setup ("Battery, screen off"). A beacon sent while
+  the screen is off uses the last fix, so it can be a little old. Measured on one pager: **about 24 mA with the screen off, against about 65 mA before** (see [Battery life](#battery-life)). USB disables
   the sleep, so the serial port stays up.
 - **Help screen.** Backspace, then **Help**: the keys and knob actions, and a QR code for the map SD card guide (turn the knob for the second page).
 - **Mic-E** position packets (used by many handheld and mobile radios) are decoded, including blanked-digit position ambiguity; checked against
@@ -48,7 +49,7 @@ firmware's demo mode (`DEMO MODE` is shown on the screen, and nothing is transmi
 - **Screenshots over USB** for documentation (`tools/screenshot.py`). The firmware also answers a few one-letter test commands on USB serial
   (`S` screenshot, `M` open Messages, `G<lat>,<lon>,<zoom>` map position, `V<0-3>` station view, `C<call>` select a station, `X` close menus,
   `D<lat>,<lon>` demo mode with simulated stations (never transmits), `B` read the battery gauge, `R` restart), and `P...` commands for power
-  testing (see [docs/energy-saving.md](docs/energy-saving.md)). Send them only from your own computer.
+  testing (see [docs/low-power.md](docs/low-power.md)). Send them only from your own computer.
 
 The firmware only **reads** the SD card. Settings and messages live in the pager's own flash.
 
@@ -116,7 +117,7 @@ as an estimate; the GPS is the biggest remaining unknown (it works harder indoor
 
 What saves power, from most to least: let the screen time out (shorter is better), keep USB unplugged, lower the brightness, beacon less often,
 and use **Power off** (Backspace) when it will not be used for days. What was measured and why, including a leak that cost about 40 mA and how to
-avoid it in other firmware for this board, is in [docs/energy-saving.md](docs/energy-saving.md).
+avoid it in other firmware for this board, is in [docs/low-power.md](docs/low-power.md).
 
 ## Hardware
 
@@ -173,7 +174,7 @@ Any set of 256 px tiles in the standard `<z>/<x>/<y>` layout works: the tile pac
 
 The parsers and engines are plain C++ and are tested on a PC:
 
-    for t in aprs geo settings messaging emoticons textedit clock ubx; do
+    for t in aprs geo settings messaging emoticons textedit clock ubx gpsduty; do
       c++ -std=c++17 -I src test/host/test_$t.cpp -o /tmp/test_$t && /tmp/test_$t; done
 
 They cover the APRS frame parser and beacon builder, GPS sentences, the u-blox messages sent to the GPS, distance and bearing, the settings validation, the messaging engine
@@ -184,7 +185,7 @@ They cover the APRS frame parser and beacon builder, GPS sentences, the u-blox m
 | | |
 |---|---|
 | `src/app/app.cpp` | the application: map, stations, beacon, setup hotspot, glue |
-| `src/aprs.h`, `src/nmea.h`, `src/geo.h`, `src/ubx.h` | APRS frames, GPS sentences, distance / bearing, u-blox GPS messages (plain C++) |
+| `src/aprs.h`, `src/nmea.h`, `src/geo.h`, `src/ubx.h`, `src/gpsduty.h` | APRS frames, GPS sentences, distance / bearing, u-blox GPS messages, the GPS sleep interval (plain C++) |
 | `src/messaging.h`, `src/msg_ui.h`, `src/emoticons.h` | messaging engine, its screens, emoticon matching |
 | `src/settings_core.h`, `src/webui.h` | settings and their validation, the phone setup page |
 | `src/beacon.h`, `src/haptic.h`, `src/inputs.h`, `src/keymap.h` | beacon timing, haptics, knob and keyboard |
@@ -192,14 +193,13 @@ They cover the APRS frame parser and beacon builder, GPS sentences, the u-blox m
 | `tools/` | icon builders, `screenshot.py`, `mockup/` (screenshot in a picture of the device), `count_vec.py` |
 | `docs/messaging.md` | the messaging design and the reasoning behind it |
 | `docs/benchmarks.md` | tile and vector measurements |
-| `docs/energy-saving.md` | where the power goes on this board, what was measured, how to save energy |
+| `docs/low-power.md` | where the power goes on this board, what was measured, how to save energy |
 
 ## Not done yet
 
 Other position formats (weather, telemetry and others) are not decoded; bulletins, group text and meeting-spot objects are
 designed but not built; the LilyGO menu cannot be kept alongside this application (it needs a
-two-app flash layout); the tocall is the experimental `APZPGR` (a registered one is to be requested); vector maps are a later phase; the GPS wake
-interval while the screen is off is a constant in the code, not a setting yet.
+two-app flash layout); the tocall is the experimental `APZPGR` (a registered one is to be requested); vector maps are a later phase.
 
 
 ## Releases

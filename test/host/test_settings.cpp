@@ -5,7 +5,7 @@
 static int fails = 0;
 static void expect(bool c, const char *w) { if (!c) { fails++; printf("FAIL: %s\n", w); } }
 using M = std::map<std::string, std::string>;
-static M good() { return {{"call","k6atv-6"},{"path","wide1-1"},{"table","/"},{"sym","["},{"comment","T-LoRa Pager"},{"txdbm","20"},{"moving","60"},{"stationary","10"},{"movem","150"},{"auto","0"},{"haptic","1"},{"bright","160"},{"tz","-8"},{"dst","1"},{"baticon","1"},{"dim","60"},{"off","300"}}; }
+static M good() { return {{"call","k6atv-6"},{"path","wide1-1"},{"table","/"},{"sym","["},{"comment","T-LoRa Pager"},{"txdbm","20"},{"moving","60"},{"stationary","10"},{"movem","150"},{"auto","0"},{"haptic","1"},{"bright","160"},{"tz","-8"},{"dst","1"},{"baticon","1"},{"dim","60"},{"off","300"},{"gpssl","1"},{"gpsmv","60"},{"gpsst","5"}}; }
 static bool parse(const M &m, PagerSettings &s, std::string &err) { return settingsParse([&](const char *k, std::string &v) { auto i = m.find(k); if (i == m.end()) return false; v = i->second; return true; }, s, err); }
 int main() {
   PagerSettings s; std::string err;
@@ -23,7 +23,19 @@ int main() {
   bad("comment", "0123456789012345678901234567890123456789012345", "long comment refused");
   bad("txdbm", "23", "23 dBm refused"); bad("txdbm", "1", "1 dBm refused"); bad("txdbm", "abc", "non-number refused"); bad("txdbm", "20x", "trailing junk refused"); bad("txdbm", "", "empty number refused");
   bad("moving", "29", "moving too fast refused"); bad("moving", "3601", "moving too slow refused"); bad("stationary", "0", "0 min refused"); bad("stationary", "121", "121 min refused");
+  bad("gpssl", "2", "GPS sleep 2 refused"); bad("gpsmv", "14", "GPS move wake 14 s refused"); bad("gpsmv", "601", "GPS move wake 601 s refused");
+  bad("gpsst", "0", "GPS still wake 0 min refused"); bad("gpsst", "61", "GPS still wake 61 min refused"); bad("gpsmv", "x", "GPS move wake non-number refused");
   bad("movem", "19", "19 m refused"); bad("auto", "2", "auto 2 refused"); bad("bright", "9", "dark refused"); bad("bright", "256", "256 refused"); bad("tz", "15", "tz 15 refused"); { M m = good(); m["call"] = "W1AW-01"; std::string e; PagerSettings t; expect(!parse(m, t, e), "SSID with a leading zero refused"); } bad("tz", "-13", "tz -13 refused"); bad("dst", "2", "dst 2 refused"); bad("baticon", "2", "baticon 2 refused"); bad("dim", "-1", "dim -1 refused"); bad("off", "3601", "off 3601 refused");
+  { expect(s.gpsSleep && s.gpsMoveSec == 60 && s.gpsStillMin == 5, "GPS sleep values parsed");
+    M m = good(); m["gpssl"] = "0"; m["gpsmv"] = "15"; m["gpsst"] = "60"; PagerSettings t; std::string e; expect(parse(m, t, e) && !t.gpsSleep && t.gpsMoveSec == 15 && t.gpsStillMin == 60, "GPS sleep edge values accepted");
+    std::string j = settingsToJson(t); expect(j.find("\"gpssl\":0") != std::string::npos && j.find("\"gpsmv\":15") != std::string::npos && j.find("\"gpsst\":60") != std::string::npos, "JSON carries the GPS sleep settings");
+    PagerSettings d; expect(d.gpsSleep && d.gpsMoveSec == 60 && d.gpsStillMin == 5, "defaults: GPS sleeps, 60 s moving, 5 min still"); }
+  { // a pager saved by the first release has none of the later settings: they must read as defaults and everything else must load
+    M old = good(); for (const char *k : {"tz", "dst", "baticon", "dim", "off", "gpssl", "gpsmv", "gpsst"}) old.erase(k);
+    PagerSettings t; std::string e;
+    bool ok = settingsParse([&](const char *k, std::string &v) { auto i = old.find(k); if (i != old.end()) { v = i->second; return true; } return settingsLaterDefault(k, v); }, t, e);
+    expect(ok && std::string(t.call) == "K6ATV-6" && t.gpsSleep && t.gpsMoveSec == 60 && t.gpsStillMin == 5 && t.offSec == 300 && t.dimSec == 60 && t.utcOffset == -8 && t.usDst && t.batIcon, "settings saved by an older version load with the defaults for the new ones");
+    std::string dummy; expect(!settingsLaterDefault("call", dummy) && !settingsLaterDefault("bright", dummy), "no silent default for the original fields"); }
   { M m = good(); m.erase("bright"); std::string e; PagerSettings t; expect(!parse(m, t, e) && e.find("bright") != std::string::npos, "missing field named in the error"); }
   { M m = good(); m["table"] = "L"; m["sym"] = "&"; PagerSettings t; std::string e; expect(parse(m, t, e) && t.table == 'L' && t.sym == '&', "overlay symbol L& accepted"); }
   { M m = good(); m["table"] = "\\"; m["sym"] = "&"; PagerSettings t; std::string e; expect(parse(m, t, e) && t.table == '\\', "alternate table accepted"); }

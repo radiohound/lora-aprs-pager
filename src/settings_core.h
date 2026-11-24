@@ -25,6 +25,9 @@ struct PagerSettings {
   int dimSec = 60;                 // screen dims after this many seconds without a key or knob (0 = never)
   int offSec = 300;                // backlight off after this many seconds (0 = never); any key or knob wakes it at once, there is no lock screen
   bool batIcon = true;             // battery shape in the top right corner
+  bool gpsSleep = true;            // while the screen is off the GPS sleeps and wakes now and then for a fix (off: it stays on, which costs battery)
+  int gpsMoveSec = 60;             // GPS wake interval while the pager is moving, seconds
+  int gpsStillMin = 5;             // GPS wake interval once the pager has stayed put, minutes
 };
 
 namespace settings_detail {
@@ -75,8 +78,17 @@ inline bool settingsValidSymbol(char table, char code) {
   return t && code >= 33 && code <= 126;
 }
 
+// Settings added after the first release. A pager saved by an older version has no such keys; they must read as these defaults, because if a
+// field is missing the whole load fails and the pager silently falls back to factory settings (the call sign would be lost).
+inline bool settingsLaterDefault(const char *k, std::string &v) {
+  struct D { const char *k, *v; };
+  static const D defs[] = {{"tz", "-8"}, {"dst", "1"}, {"baticon", "1"}, {"dim", "60"}, {"off", "300"}, {"gpssl", "1"}, {"gpsmv", "60"}, {"gpsst", "5"}};
+  for (const D &d : defs) if (!strcmp(k, d.k)) { v = d.v; return true; }
+  return false;
+}
+
 // Read all fields through get(name, value). Returns true and fills `out` only if EVERY field is valid; otherwise `err` says
-// which one is wrong and `out` is left untouched. Fields: call path table sym comment txdbm moving stationary movem auto haptic bright tz dst baticon dim off
+// which one is wrong and `out` is left untouched. Fields: call path table sym comment txdbm moving stationary movem auto haptic bright tz dst baticon dim off gpssl gpsmv gpsst
 using SettingsGet = std::function<bool(const char *, std::string &)>;
 inline bool settingsParse(const SettingsGet &get, PagerSettings &out, std::string &err) {
   using namespace settings_detail;
@@ -117,6 +129,10 @@ inline bool settingsParse(const SettingsGet &get, PagerSettings &out, std::strin
   if (!num("off", 0, 3600, n.offSec, "Screen off after: 0 to 3600 seconds")) return false;
   if (!num("baticon", 0, 1, b, "Battery icon: 0 or 1")) return false;
   n.batIcon = b;
+  if (!num("gpssl", 0, 1, b, "GPS sleep: 0 or 1")) return false;
+  n.gpsSleep = b;
+  if (!num("gpsmv", 15, 600, n.gpsMoveSec, "GPS wake while moving: 15 to 600 seconds")) return false;
+  if (!num("gpsst", 1, 60, n.gpsStillMin, "GPS wake while still: 1 to 60 minutes")) return false;
   out = n; return true;
 }
 
@@ -126,12 +142,12 @@ inline std::string settingsJsonEscape(const char *s) {
   return o;
 }
 inline std::string settingsToJson(const PagerSettings &s) {
-  char b[512];
+  char b[640];
   std::string cm = settingsJsonEscape(s.comment), pa = settingsJsonEscape(s.path);
   char t[3] = {s.table, 0, 0}; std::string tb = settingsJsonEscape(t); char y[2] = {s.sym, 0}; std::string sy = settingsJsonEscape(y);
   snprintf(b, sizeof b, "{\"call\":\"%s\",\"path\":\"%s\",\"table\":\"%s\",\"sym\":\"%s\",\"comment\":\"%s\",\"txdbm\":%d,\"moving\":%d,"
-           "\"stationary\":%d,\"movem\":%d,\"auto\":%d,\"haptic\":%d,\"bright\":%d,\"tz\":%d,\"dst\":%d,\"baticon\":%d,\"dim\":%d,\"off\":%d}",
+           "\"stationary\":%d,\"movem\":%d,\"auto\":%d,\"haptic\":%d,\"bright\":%d,\"tz\":%d,\"dst\":%d,\"baticon\":%d,\"dim\":%d,\"off\":%d,\"gpssl\":%d,\"gpsmv\":%d,\"gpsst\":%d}",
            s.call, pa.c_str(), tb.c_str(), sy.c_str(), cm.c_str(), s.txDbm, s.movingSec, s.stationaryMin, s.moveMetres,
-           s.autoAtBoot ? 1 : 0, s.haptic ? 1 : 0, s.brightness, s.utcOffset, s.usDst ? 1 : 0, s.batIcon ? 1 : 0, s.dimSec, s.offSec);
+           s.autoAtBoot ? 1 : 0, s.haptic ? 1 : 0, s.brightness, s.utcOffset, s.usDst ? 1 : 0, s.batIcon ? 1 : 0, s.dimSec, s.offSec, s.gpsSleep ? 1 : 0, s.gpsMoveSec, s.gpsStillMin);
   return b;
 }

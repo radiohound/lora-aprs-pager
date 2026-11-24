@@ -29,6 +29,9 @@
 #include "messaging.h"
 #include "clock.h"
 #include "ubx.h"
+#include "gpsduty.h"
+#include <esp_task_wdt.h>
+#include <esp_system.h>
 
 static XL9555 xp;
 static PagerDisplay tft;
@@ -60,6 +63,7 @@ struct Station { char call[10]; double lat, lon; char table, sym; uint32_t heard
 static Station stations[48];
 static uint32_t utcNow();
 static void gpsHint();
+static void plogInit();
 static void gpsPosSave();                           // the clock, defined further down
 static char lastHeardCall[10] = "";                 // the station heard most recently, and when (the full list lights it up)
 static uint32_t lastHeardAt = 0, lastKnobAt = 0;      // lastKnobAt: when the knob last moved in the full list (it stops following new packets for a while)
@@ -636,6 +640,8 @@ static void render() {
 
 void setup() {
   Serial.begin(115200); delay(500);
+  plogInit();
+  esp_task_wdt_deinit(); esp_task_wdt_init(30, true); esp_task_wdt_add(NULL);     // if the main loop stops for 30 s the pager resets itself (and the log survives)
   S = loadSettings();
   M.setCall(S.call); msgLoad(); M.restoreTimers(millis()); M.startIds(esp_random());
   Wire.begin(PIN_SDA, PIN_SCL, 400000);
@@ -711,13 +717,14 @@ static void saveSettings(const PagerSettings &x) {
   p.putString("call", x.call); p.putString("path", x.path); p.putString("table", t); p.putString("sym", y); p.putString("comment", x.comment);
   p.putString("txdbm", String(x.txDbm)); p.putString("moving", String(x.movingSec)); p.putString("stationary", String(x.stationaryMin));
   p.putString("movem", String(x.moveMetres)); p.putString("auto", x.autoAtBoot ? "1" : "0"); p.putString("haptic", x.haptic ? "1" : "0");
-  p.putString("bright", String(x.brightness)); p.putString("tz", String(x.utcOffset)); p.putString("dst", x.usDst ? "1" : "0"); p.putString("baticon", x.batIcon ? "1" : "0"); p.putString("dim", String(x.dimSec)); p.putString("off", String(x.offSec)); p.end();
+  p.putString("bright", String(x.brightness)); p.putString("tz", String(x.utcOffset)); p.putString("dst", x.usDst ? "1" : "0"); p.putString("baticon", x.batIcon ? "1" : "0"); p.putString("dim", String(x.dimSec)); p.putString("off", String(x.offSec));
+  p.putString("gpssl", x.gpsSleep ? "1" : "0"); p.putString("gpsmv", String(x.gpsMoveSec)); p.putString("gpsst", String(x.gpsStillMin)); p.end();
 }
 static PagerSettings loadSettings() {
   PagerSettings x; Preferences p; p.begin("pgr-aprs", true);
   std::string err;
   bool ok = settingsParse([&](const char *k, std::string &v) {
-    if (!p.isKey(k)) { if (!strcmp(k, "tz")) { v = "-8"; return true; } if (!strcmp(k, "dst") || !strcmp(k, "baticon")) { v = "1"; return true; } if (!strcmp(k, "dim")) { v = "60"; return true; } if (!strcmp(k, "off")) { v = "300"; return true; } return false; }   // settings saved by an older build: default clock
+    if (!p.isKey(k)) return settingsLaterDefault(k, v);              // saved by an older version: the default for settings added later, else the load fails
     v = p.getString(k, "").c_str(); return true; }, x, err);
   p.end();
   return ok ? x : PagerSettings();            // nothing saved yet, or damaged: the defaults
@@ -753,17 +760,33 @@ static void gpsPosSave() {                                  // remember where we
 // A small event log kept in memory (serial command PW prints it): what the power code did and when. It survives as long as the app keeps running,
 // so after a pager that "would not wake" is plugged in, the log shows what happened while it was asleep.
 struct PEv { uint32_t ms; char tag; int a, b; };
-static PEv plogBuf[96]; static int plogN = 0; static bool plogSleepOpen = false; static uint32_t plogTimerWakes = 0;
+// The log lives in RTC memory, which survives a watchdog or software reset (not a power loss or the RST button), so after the pager has reset itself
+// the log still shows what it was doing just before. Each start adds an 'R' entry with the reset reason (1 power-on, 2 RST button, 3 software, 4 crash,
+// 5 interrupt watchdog, 6 task watchdog, 9 brown-out).
+struct PRst { uint32_t bootMs, upMs; int reason, stage; };                       // upMs: how long the run that ended had been up; stage: the code stage it was in
+struct PLogStore { uint32_t magic; int n; PEv buf[96]; uint32_t stage, stageMs, beats; int pins; PRst rst[8]; int rstN; uint32_t gpsWakes; };   // stage: where the code was when the last marker was written
+static RTC_NOINIT_ATTR PLogStore plogRtc;
+#define plogBuf plogRtc.buf
+#define plogN plogRtc.n
+static inline void pstage(uint32_t st) { plogRtc.stage = st; plogRtc.stageMs = millis(); }   // 1 arming wake sources, 2 about to sleep, 3 woke, 4 pins restored, 5 loop pass started, 6 loop reached the radio, 7 loop reached the keys
+static bool plogSleepOpen = false; static uint32_t plogTimerWakes = 0;
 static void plog(char tag, int a = 0, int b = 0) { PEv &e = plogBuf[plogN % 96]; e.ms = millis(); e.tag = tag; e.a = a; e.b = b; plogN++; plogSleepOpen = (tag == 's'); }
+static void plogInit() {                                    // at start-up: keep the log if the RTC memory still holds one, then note why we restarted
+  if (plogRtc.magic != 0x504C4F48 || plogRtc.n < 0) { memset(&plogRtc, 0, sizeof plogRtc); plogRtc.magic = 0x504C4F48; }
+  { PRst &r = plogRtc.rst[plogRtc.rstN % 8]; r.reason = (int)esp_reset_reason(); r.stage = (int)plogRtc.stage; r.upMs = plogRtc.stageMs; r.bootMs = 0; plogRtc.rstN++; }   // never overwritten by ordinary entries
+  plog('R', (int)esp_reset_reason(), (int)plogRtc.stage);
+}
 static bool lightSlept = false;                              // the processor light-slept while the screen was off: the display's bus needs a full re-init on wake
 static int pinBits() { return digitalRead(PIN_LORA_IRQ) | (digitalRead(PIN_KB_INT) << 1) | (digitalRead(PIN_ROT_PRESS) << 2) | (digitalRead(PIN_ROT_A) << 3) | (digitalRead(PIN_ROT_B) << 4) | (digitalRead(PIN_GPS_RX) << 5); }
 static bool aSd = false, aPanel = false, aGps = false;     // what is applied right now
 // GPS while the screen is off: it sleeps (backup mode, about 0.03 mA) and wakes every minute for a fix, then sleeps again. It stays powered, so it keeps
 // its satellite data and wakes hot. While the screen is on it runs all the time. Wake-up is any byte sent to it.
-static const uint32_t GPS_POLL_MS = 60000, GPS_ON_MIN_MS = 6000, GPS_ON_MAX_MS = 30000;
-static bool gpsSleeping = false; static uint32_t gpsWakeAt = 0, gpsOnAt = 0, gpsEpochAtOn = 0;
-static void gpsBackup() {
-  uint8_t f[24]; ubxSend(f, ubxBackup(f)); gpsSleeping = true; gpsWakeAt = millis() + GPS_POLL_MS; plog('b');
+static const uint32_t GPS_ON_MIN_MS = 6000, GPS_ON_MAX_MS = 30000;      // stay awake at least this long for a fresh fix, give up after this long
+static bool gpsSleeping = false; static uint32_t gpsWakeAt = 0, gpsOnAt = 0, gpsEpochAtOn = 0, gpsIntervalMs = 60000;
+static GpsAdaptive gpsAd;                                              // adaptive wake interval, see src/gpsduty.h (settings: moving seconds, still minutes)
+static void gpsBackup(bool gotFix) {
+  gpsIntervalMs = gpsAdaptiveNext(gpsAd, gotFix && gps.fix.valid, gps.fix.lat, gps.fix.lon, S.gpsMoveSec, S.gpsStillMin);
+  uint8_t f[24]; ubxSend(f, ubxBackup(f)); gpsSleeping = true; gpsWakeAt = millis() + gpsIntervalMs; plog('b', (int)(gpsIntervalMs / 1000), gpsAd.still);
 }
 static void gpsWake() {
   for (int i = 0; i < 4; i++) Serial1.write((uint8_t)0xFF);
@@ -774,16 +797,17 @@ static void gpsDuty() {                                     // called every pass
   uint32_t now = millis();
   if (gpsSleeping) { if ((int32_t)(now - gpsWakeAt) >= 0) gpsWake(); return; }
   bool fresh = gps.fix.valid && gps.fix.epoch != gpsEpochAtOn;        // a fix from this wake-up, not the one from before
-  if ((fresh && now - gpsOnAt > GPS_ON_MIN_MS) || now - gpsOnAt > GPS_ON_MAX_MS) gpsBackup();
+  if (fresh && now - gpsOnAt > GPS_ON_MIN_MS) gpsBackup(true);
+  else if (now - gpsOnAt > GPS_ON_MAX_MS) gpsBackup(false);
 }
 // What the screen being off switches off. The SD card's chip-select is floated too: driven high into an unpowered card it leaked about 14 mA.
 // The panel's sleep command saves about 13 mA.
 static uint32_t panelRetryUntil = 0, panelRetryAt = 0;      // after a wake, the panel's sleep-out is repeated for a few seconds (see below)
 static void powerApply() {
   bool off = screenState == 2 && !setupMode;
-  bool wSd = off && pwrSd, wPanel = off && pwrPanel, wGps = off && pwrGps && !demoMode;
+  bool wSd = off && pwrSd, wPanel = off && pwrPanel, wGps = off && pwrGps && S.gpsSleep && !demoMode;
   if (wSd != aSd || wPanel != aPanel || wGps != aGps) plog(off ? 'O' : 'o', wSd | (wPanel << 1) | (wGps << 2));
-  if (wGps != aGps) { if (wGps) { gpsSleeping = false; gpsOnAt = millis(); gpsEpochAtOn = gps.fix.epoch; } else if (gpsSleeping) gpsWake(); aGps = wGps; }
+  if (wGps != aGps) { if (wGps) { gpsSleeping = false; gpsOnAt = millis(); gpsEpochAtOn = gps.fix.epoch; gpsAdaptiveReset(gpsAd, gps.fix.valid, gps.fix.lat, gps.fix.lon); } else if (gpsSleeping) gpsWake(); aGps = wGps; }
   // Waking: the SD card first, then the panel. After light sleep the panel's first sleep-out command, sent straight away, did not take; the same command
   // sent later (after the SD card was back) did. Going to sleep: panel first, then the SD card.
   if (!wSd && aSd) {
@@ -1051,32 +1075,40 @@ extern volatile int32_t knobSteps; extern volatile uint8_t kLast;
 static void lightSleepOnce() {
   uint8_t st = 0; if (i2cRead(ADDR_BQ25896, 0x0B, &st, 1) != 0 || (st >> 5) != 0) { delay(10); return; }   // charger unreadable or power on VBUS: stay awake
   if (digitalRead(PIN_LORA_IRQ)) { rxFlag = true; delay(1); return; }                                  // a packet is already waiting
+  pstage(1);
   esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
   gpio_wakeup_enable((gpio_num_t)PIN_LORA_IRQ, GPIO_INTR_HIGH_LEVEL);
   if (digitalRead(PIN_KB_INT)) gpio_wakeup_enable((gpio_num_t)PIN_KB_INT, GPIO_INTR_LOW_LEVEL);
   if (digitalRead(PIN_ROT_PRESS)) gpio_wakeup_enable((gpio_num_t)PIN_ROT_PRESS, GPIO_INTR_LOW_LEVEL);
   gpio_wakeup_enable((gpio_num_t)PIN_ROT_A, digitalRead(PIN_ROT_A) ? GPIO_INTR_LOW_LEVEL : GPIO_INTR_HIGH_LEVEL);
   gpio_wakeup_enable((gpio_num_t)PIN_ROT_B, digitalRead(PIN_ROT_B) ? GPIO_INTR_LOW_LEVEL : GPIO_INTR_HIGH_LEVEL);
-  if (digitalRead(PIN_GPS_RX)) gpio_wakeup_enable((gpio_num_t)PIN_GPS_RX, GPIO_INTR_LOW_LEVEL);   // a start bit: the GPS is sending
+  // no wake on the GPS line: with the GPS talking, its level wake fired in a storm and the interrupt watchdog reset the chip (26 resets overnight, all inside the sleep call)
   esp_sleep_enable_gpio_wakeup();
   esp_sleep_enable_timer_wakeup(1000000ULL);
   Serial.flush();
   if (!plogSleepOpen) plog('s', pinBits());                                                  // one entry per stretch of sleeping; plain one-second timer wakes are only counted
+  pstage(2); plogRtc.pins = pinBits();
   esp_light_sleep_start();
+  pstage(3); plogRtc.beats++;
   lightSlept = true;
-  { int cause = (int)esp_sleep_get_wakeup_cause(); if (cause == ESP_SLEEP_WAKEUP_TIMER) plogTimerWakes++; else plog('w', cause, pinBits()); }
+  { int cause = (int)esp_sleep_get_wakeup_cause(), pb = pinBits();
+    if (cause == ESP_SLEEP_WAKEUP_TIMER) plogTimerWakes++;
+    else if ((pb & 1) == 0 && (pb & 4) && (pb & 8) && (pb & 16) && !(pb & 32)) plogRtc.gpsWakes++;      // only the GPS start bit: counted, not logged
+    else plog('w', cause, pb); }
   // gpio_wakeup_enable() had made these pins level-triggered interrupts: undo that at once, or a pin still at its wake level fires its interrupt forever (watchdog reset)
   for (int pin : {PIN_LORA_IRQ, PIN_KB_INT, PIN_ROT_PRESS, PIN_ROT_A, PIN_ROT_B, PIN_GPS_RX}) gpio_wakeup_disable((gpio_num_t)pin);
   gpio_set_intr_type((gpio_num_t)PIN_LORA_IRQ, GPIO_INTR_POSEDGE);                       // the radio library uses a rising edge
   gpio_set_intr_type((gpio_num_t)PIN_ROT_A, GPIO_INTR_ANYEDGE); gpio_set_intr_type((gpio_num_t)PIN_ROT_B, GPIO_INTR_ANYEDGE);   // the knob uses CHANGE
   for (int pin : {PIN_KB_INT, PIN_ROT_PRESS, PIN_GPS_RX}) gpio_set_intr_type((gpio_num_t)pin, GPIO_INTR_DISABLE);                // these are polled
+  pstage(4);
   if (digitalRead(PIN_LORA_IRQ)) rxFlag = true;                                              // the edge interrupt may not have run during sleep
   uint8_t ks = (digitalRead(PIN_ROT_A) << 1) | digitalRead(PIN_ROT_B);
   if (ks != kLast) { kLast = ks; screenTouch(); }                                            // the knob moved: wake the screen, the turn itself is ignored
 }
 void loop() {
+  esp_task_wdt_reset(); pstage(5);
   if (root == "") { delay(1000); return; }
-  if (pwrSleep && screenState == 2 && !setupMode && !demoMode && radioOk && millis() - lastGpsByte > 400) lightSleepOnce();
+  if (pwrSleep && screenState == 2 && !setupMode && !demoMode && radioOk && millis() - lastGpsByte > 400 && (gpsSleeping || !S.gpsSleep || !pwrGps)) lightSleepOnce();
   else delay(screenState ? 10 : 2);                  // let the processor idle between passes (the radio, GPS and knob are interrupt or buffer driven)
 
   // GPS characters
@@ -1135,7 +1167,8 @@ void loop() {
           }
           else if (cmd[1] == 'W') {                                               // the event log, oldest first
             int n = plogN < 96 ? plogN : 96, first = plogN - n; uint32_t now = millis();
-            Serial.printf("event log: %d events, %lu timer wakes, now %lu ms\n", plogN, (unsigned long)plogTimerWakes, (unsigned long)now);
+            Serial.printf("event log: %d events, %lu timer wakes this run, now %lu ms; stage %lu set at %lu ms, %lu sleeps, pins at last sleep %d\n", plogN, (unsigned long)plogTimerWakes, (unsigned long)now, (unsigned long)plogRtc.stage, (unsigned long)plogRtc.stageMs, (unsigned long)plogRtc.beats, plogRtc.pins);
+            { int rn = plogRtc.rstN < 8 ? plogRtc.rstN : 8, rf = plogRtc.rstN - rn; Serial.printf("restarts (%d): ", plogRtc.rstN); for (int i = 0; i < rn; i++) { PRst &r = plogRtc.rst[(rf + i) % 8]; Serial.printf("[reason %d, stage %d, last stage at %lu ms] ", r.reason, r.stage, (unsigned long)r.upMs); } Serial.printf("\nGPS-only wakes %lu\n", (unsigned long)plogRtc.gpsWakes); }
             for (int i = 0; i < n; i++) { PEv &e = plogBuf[(first + i) % 96]; Serial.printf("  %9lu ms  %c  %d %d\n", (unsigned long)e.ms, e.tag, e.a, e.b); }
           }
           else if (cmd[1] == 'L') { pwrSleep = cmd[2] == '1'; }
@@ -1143,7 +1176,7 @@ void loop() {
             int n = atoi(cmd + 2); if (n < 1) n = 10; if (n > 3600) n = 3600;
             long sum = 0; int lo = 32767, hi = -32768, k = 0;
             for (int i = 0; i < n; i++) {
-              delay(1000); uint8_t b[2];
+              delay(1000); esp_task_wdt_reset(); uint8_t b[2];
               if (i2cRead(ADDR_BQ27220, 0x14, b, 2) == 0) { int v = (int16_t)(b[0] | (b[1] << 8)); sum += v; k++; if (v < lo) lo = v; if (v > hi) hi = v; }
             }
             uint8_t vb[2]; int mv = i2cRead(ADDR_BQ27220, 0x08, vb, 2) == 0 ? (vb[0] | (vb[1] << 8)) : 0;
