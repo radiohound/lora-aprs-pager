@@ -3,6 +3,7 @@
 // Knob: turn = pan / zoom / select, press = switch what the knob does, long press = centre on me.
 #include <Arduino.h>
 #include <Wire.h>
+#include "motion.h"
 #include <SPI.h>
 #include <SD.h>
 #include <vector>
@@ -718,7 +719,7 @@ static void saveSettings(const PagerSettings &x) {
   p.putString("txdbm", String(x.txDbm)); p.putString("moving", String(x.movingSec)); p.putString("stationary", String(x.stationaryMin));
   p.putString("movem", String(x.moveMetres)); p.putString("auto", x.autoAtBoot ? "1" : "0"); p.putString("haptic", x.haptic ? "1" : "0");
   p.putString("bright", String(x.brightness)); p.putString("tz", String(x.utcOffset)); p.putString("dst", x.usDst ? "1" : "0"); p.putString("baticon", x.batIcon ? "1" : "0"); p.putString("dim", String(x.dimSec)); p.putString("off", String(x.offSec));
-  p.putString("gpssl", x.gpsSleep ? "1" : "0"); p.putString("gpsmv", String(x.gpsMoveSec)); p.putString("gpsst", String(x.gpsStillMin)); p.end();
+  p.putString("gpssl", x.gpsSleep ? "1" : "0"); p.putString("gpsmv", String(x.gpsMoveSec)); p.putString("gpsst", String(x.gpsStillMin)); p.putString("gpsmo", x.gpsMotion ? "1" : "0"); p.putString("gpsbk", String(x.gpsBackstopMin)); p.end();
 }
 static PagerSettings loadSettings() {
   PagerSettings x; Preferences p; p.begin("pgr-aprs", true);
@@ -1076,6 +1077,7 @@ static void lightSleepOnce() {
   uint8_t st = 0; if (i2cRead(ADDR_BQ25896, 0x0B, &st, 1) != 0 || (st >> 5) != 0) { delay(10); return; }   // charger unreadable or power on VBUS: stay awake
   if (digitalRead(PIN_LORA_IRQ)) { rxFlag = true; delay(1); return; }                                  // a packet is already waiting
   pstage(1);
+  detachInterrupt(PIN_ROT_A); detachInterrupt(PIN_ROT_B);                                // no knob handler while the lines are level wake sources: noise on them on battery made a storm of interrupts inside the sleep call
   esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
   gpio_wakeup_enable((gpio_num_t)PIN_LORA_IRQ, GPIO_INTR_HIGH_LEVEL);
   if (digitalRead(PIN_KB_INT)) gpio_wakeup_enable((gpio_num_t)PIN_KB_INT, GPIO_INTR_LOW_LEVEL);
@@ -1098,7 +1100,7 @@ static void lightSleepOnce() {
   // gpio_wakeup_enable() had made these pins level-triggered interrupts: undo that at once, or a pin still at its wake level fires its interrupt forever (watchdog reset)
   for (int pin : {PIN_LORA_IRQ, PIN_KB_INT, PIN_ROT_PRESS, PIN_ROT_A, PIN_ROT_B, PIN_GPS_RX}) gpio_wakeup_disable((gpio_num_t)pin);
   gpio_set_intr_type((gpio_num_t)PIN_LORA_IRQ, GPIO_INTR_POSEDGE);                       // the radio library uses a rising edge
-  gpio_set_intr_type((gpio_num_t)PIN_ROT_A, GPIO_INTR_ANYEDGE); gpio_set_intr_type((gpio_num_t)PIN_ROT_B, GPIO_INTR_ANYEDGE);   // the knob uses CHANGE
+  attachInterrupt(PIN_ROT_A, knobIsr, CHANGE); attachInterrupt(PIN_ROT_B, knobIsr, CHANGE);                                      // the knob uses CHANGE
   for (int pin : {PIN_KB_INT, PIN_ROT_PRESS, PIN_GPS_RX}) gpio_set_intr_type((gpio_num_t)pin, GPIO_INTR_DISABLE);                // these are polled
   pstage(4);
   if (digitalRead(PIN_LORA_IRQ)) rxFlag = true;                                              // the edge interrupt may not have run during sleep
@@ -1164,6 +1166,11 @@ void loop() {
           else if (cmd[1] == 'O') {                                               // PO<seconds>: screen-off time, saved (dim comes at half of it)
             int v = atoi(cmd + 2);
             if (v >= 0 && v <= 3600) { S.offSec = v; if (v && S.dimSec >= v) S.dimSec = v / 2; saveSettings(S); applySettings(); Serial.printf("screen off after %d s, dim after %d s (saved)\n", S.offSec, S.dimSec); }
+          }
+          else if (cmd[1] == 'M') {                                               // PM: load the motion sensor, then report tilt / significant-motion events for 5 minutes
+            if (!motionOk && !motionBegin()) { Serial.println("motion: failed"); }
+            else { Serial.println("motion: move or tilt the pager (5 min)"); uint32_t t0 = millis(); uint32_t lt = 0, ls = 0;
+              while (millis() - t0 < 300000) { motionPoll(); if (motionTilts != lt || motionSigs != ls) { lt = motionTilts; ls = motionSigs; Serial.printf("  %lus: tilt %lu, significant %lu\n", (millis() - t0) / 1000, (unsigned long)lt, (unsigned long)ls); } delay(20); esp_task_wdt_reset(); } }
           }
           else if (cmd[1] == 'W') {                                               // the event log, oldest first
             int n = plogN < 96 ? plogN : 96, first = plogN - n; uint32_t now = millis();

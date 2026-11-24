@@ -26,6 +26,18 @@ int main() {
   expect(gpsAdaptiveNext(a, true, lat, lon, 30, 15) == 15 * 60000UL, "still interval follows the setting");
   gpsAdaptiveReset(a, true, lat, lon);
   expect(gpsAdaptiveNext(a, true, lat + 0.01, lon, 30, 15) == 30000UL, "moving interval follows the setting");
+  // motion sensor
+  gpsAdaptiveReset(a, true, lat, lon); a.motionAware = false; a.motionWakeSeen = false;
+  gpsAdaptiveNext(a, true, lat, lon, MV, ST); gpsAdaptiveNext(a, true, lat, lon, MV, ST);   // now in the long sleep
+  expect(!gpsAdaptiveOnMotion(a, 1000), "without a motion sensor a movement does nothing");
+  a.motionAware = true;
+  expect(gpsAdaptiveOnMotion(a, 1000), "movement during the long sleep wakes the GPS now");
+  expect(a.still == 0, "and the short interval applies again");
+  expect(!gpsAdaptiveOnMotion(a, 2000), "movement while already in the short interval: nothing to wake");
+  gpsAdaptiveNext(a, true, lat, lon, MV, ST); expect(gpsAdaptiveNext(a, true, lat, lon, MV, ST) == LONG, "two still wake-ups later: long again");
+  expect(!gpsAdaptiveOnMotion(a, 30000), "a second movement wake within a minute is held back (vibration)");
+  expect(a.still >= 2, "and the long sleep goes on");
+  expect(gpsAdaptiveOnMotion(a, 61001 + 1000), "a minute later it wakes again");
   if (!fails) printf("gpsduty: all ok\n");
   return fails ? 1 : 0;
 }

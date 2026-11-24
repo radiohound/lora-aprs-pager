@@ -57,6 +57,8 @@ button{font:inherit;padding:12px 18px;border-radius:10px;border:0;background:var
 <div class="chk"><input type="checkbox" id="gpssl"><label for="gpssl">GPS sleeps while the screen is off</label></div>
 <label for="gpsmv">GPS wakes for a fix every, while moving</label><select id="gpsmv"><option value="30">30 seconds</option><option value="60">1 minute</option><option value="120">2 minutes</option><option value="300">5 minutes</option></select>
 <label for="gpsst">GPS wakes for a fix every, once standing still</label><select id="gpsst"><option value="2">2 minutes</option><option value="5">5 minutes</option><option value="10">10 minutes</option><option value="15">15 minutes</option><option value="30">30 minutes</option><option value="60">1 hour</option></select>
+<div class="chk"><input type="checkbox" id="gpsmo"><label for="gpsmo">Wake the GPS when the pager moves (motion sensor)</label></div>
+<label for="gpsbk">With the motion sensor: GPS wakes anyway every, while nothing moves</label><select id="gpsbk"><option value="15">15 minutes</option><option value="30">30 minutes</option><option value="60">1 hour</option><option value="120">2 hours</option><option value="240">4 hours</option></select>
 <small>With the screen off the pager sleeps and still hears every packet. The GPS is the biggest cost: it wakes briefly for a fix, and once two fixes in a row show you have not moved (or it cannot see the sky) it waits the longer time. The cost: a beacon sent while the screen is off uses the last fix, and a move is noticed at the next wake. Switch GPS sleep off to keep the GPS running (uses much more battery).</small></div>
 
 <div class="card"><h2>Clock</h2>
@@ -77,11 +79,11 @@ function build(){const g=$('grid');g.innerHTML='';for(let n=0;n<94;n++){const c=
 function ovInput(){const v=$('ov').value.toUpperCase();$('ov').value=v;tbl=/^[0-9A-Z]$/.test(v)?v:'\\';show()}
 fetch('settings.json').then(r=>r.json()).then(s=>{
  $('call').value=s.call;$('comment').value=s.comment;$('path').value=s.path;$('txdbm').value=s.txdbm;$('movem').value=s.movem;
- $('moving').value=s.moving;$('stationary').value=s.stationary;$('auto').checked=!!s.auto;$('haptic').checked=!!s.haptic;$('bright').value=s.bright;$('tz').value=s.tz;$('dst').checked=!!s.dst;$('baticon').checked=!!s.baticon;$('dim').value=s.dim;$('off').value=s.off;$('gpssl').checked=!!s.gpssl;$('gpsmv').value=s.gpsmv;$('gpsst').value=s.gpsst;
+ $('moving').value=s.moving;$('stationary').value=s.stationary;$('auto').checked=!!s.auto;$('haptic').checked=!!s.haptic;$('bright').value=s.bright;$('tz').value=s.tz;$('dst').checked=!!s.dst;$('baticon').checked=!!s.baticon;$('dim').value=s.dim;$('off').value=s.off;$('gpssl').checked=!!s.gpssl;$('gpsmv').value=s.gpsmv;$('gpsst').value=s.gpsst;$('gpsmo').checked=!!s.gpsmo;$('gpsbk').value=s.gpsbk;
  tbl=s.table;code=s.sym;T=tbl=='/'?0:1;$('ov').value=/^[0-9A-Z]$/.test(tbl)?tbl:'';tab(T)}).catch(()=>{$('msg').textContent='Could not load the settings';$('msg').className='err'});
 async function save(ev){ev.preventDefault();const m=$('msg');m.className='';m.textContent='Saving...';
  const p=new URLSearchParams({call:$('call').value,path:$('path').value,table:tbl,sym:code,comment:$('comment').value,txdbm:$('txdbm').value,
-  moving:$('moving').value,stationary:$('stationary').value,movem:$('movem').value,auto:$('auto').checked?1:0,haptic:$('haptic').checked?1:0,bright:$('bright').value,tz:$('tz').value,dst:$('dst').checked?1:0,baticon:$('baticon').checked?1:0,dim:$('dim').value,off:$('off').value,gpssl:$('gpssl').checked?1:0,gpsmv:$('gpsmv').value,gpsst:$('gpsst').value});
+  moving:$('moving').value,stationary:$('stationary').value,movem:$('movem').value,auto:$('auto').checked?1:0,haptic:$('haptic').checked?1:0,bright:$('bright').value,tz:$('tz').value,dst:$('dst').checked?1:0,baticon:$('baticon').checked?1:0,dim:$('dim').value,off:$('off').value,gpssl:$('gpssl').checked?1:0,gpsmv:$('gpsmv').value,gpsst:$('gpsst').value,gpsmo:$('gpsmo').checked?1:0,gpsbk:$('gpsbk').value});
  try{const r=await fetch('save',{method:'POST',body:p});const j=await r.json();m.textContent=j.ok?'Saved. The pager is using the new settings.':j.error;m.className=j.ok?'ok':'err'}
  catch(e){m.textContent='Could not reach the pager';m.className='err'}return false}
 </script></body></html>)HTML";
