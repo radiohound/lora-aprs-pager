@@ -28,6 +28,7 @@
 #include <LittleFS.h>
 #include "messaging.h"
 #include "clock.h"
+#include "ubx.h"
 
 static XL9555 xp;
 static PagerDisplay tft;
@@ -57,7 +58,9 @@ struct Station { char call[10]; double lat, lon; char table, sym; uint32_t heard
 
                  uint16_t count; char raw[121], path[40], via[10], comment[44]; };   // raw = the last packet as text; via = the digipeater that repeated it ("" = heard directly)
 static Station stations[48];
-static uint32_t utcNow();                           // the clock, defined further down
+static uint32_t utcNow();
+static void gpsHint();
+static void gpsPosSave();                           // the clock, defined further down
 static char lastHeardCall[10] = "";                 // the station heard most recently, and when (the full list lights it up)
 static uint32_t lastHeardAt = 0, lastKnobAt = 0;      // lastKnobAt: when the knob last moved in the full list (it stops following new packets for a while)
 static int stationCount() { int n = 0; for (auto &s : stations) if (s.used) n++; return n; }
@@ -232,8 +235,8 @@ static void fromPx(double x, double y, int z, double &lat, double &lon) {
 }
 
 // ---- Knob: interrupt driven so no detent is lost while a frame is being drawn ----
-static volatile int32_t knobSteps = 0;
-static volatile uint8_t kLast = 0; static volatile int8_t kAcc = 0;
+volatile int32_t knobSteps = 0;
+volatile uint8_t kLast = 0; static volatile int8_t kAcc = 0;
 static void IRAM_ATTR knobIsr() {
   static const int8_t T[16] = {0,-1,1,0, 1,0,0,-1, -1,0,0,1, 0,1,-1,0};
   uint8_t s = (digitalRead(PIN_ROT_A) << 1) | digitalRead(PIN_ROT_B);
@@ -458,9 +461,46 @@ static void drawFullList(lgfx::LovyanGFX &D, int W, int H) {
 }
 
 // ---- Main menu (Backspace on the map): knob turn = move, press = choose, long press or Backspace = close ----
-enum MenuAct { MA_NONE, MA_MESSAGES, MA_SETUP, MA_BEACON, MA_AUTO, MA_POWEROFF_ASK, MA_POWEROFF_YES, MA_NO, MA_CLOSE };
+enum MenuAct { MA_NONE, MA_MESSAGES, MA_SETUP, MA_BEACON, MA_AUTO, MA_POWEROFF_ASK, MA_POWEROFF_YES, MA_NO, MA_CLOSE, MA_HELP };
 struct MainMenu { bool on = false; int sel = 0, n = 0; char label[7][32]; MenuAct act[7]; char title[34] = "Menu"; char info1[56] = "", info2[56] = "", info3[56] = ""; };
 static MainMenu mainMenu;
+static bool helpOn = false; static int helpPage = 0;       // Help screen: page 0 = keys, page 1 = QR code for the SD card guide
+static const char *HELP_URL = "https://github.com/radiohound/lora-aprs-pager";
+static void drawHelp(lgfx::LovyanGFX &D) {
+  D.fillRect(0, 0, 480, 222, 0x0014); D.drawFastHLine(0, 20, 480, TFT_CYAN);
+  D.setTextSize(1); D.setTextColor(TFT_CYAN); D.setCursor(6, 6); D.print(helpPage == 0 ? "HELP  1: keys" : helpPage == 1 ? "HELP  2: building the map SD card" : "HELP  3: power test");
+  D.setTextColor(0xC618); D.setCursor(336, 6); D.print("turn=page press=close");
+  D.setTextColor(TFT_WHITE);
+  if (helpPage == 0) {
+    static const char *L[] = {
+      "Backspace   menu: battery, beacon, setup, power off",
+      "M           messages          Enter   phone setup",
+      "L           next view: list + map, map, map only, full list",
+      "S           list order: nearest first or newest first",
+      "C           centre the map on me",
+      "B           beacon now        T   auto-beacon on/off",
+      "Knob turn   pan left-right, pan up-down, zoom, or move the list",
+      "Knob press  next knob mode (the top line shows which)",
+      "Knob hold   centre the map on me",
+      "Screen off: the first key press only wakes it.",
+      "Map tiles are only read from the SD card, never written."};
+    for (int i = 0; i < 11; i++) { D.setCursor(8, 30 + i * 16); D.print(L[i]); }
+  } else {
+    D.fillRect(10, 30, 186, 186, TFT_WHITE);                // 29 modules x 6 px plus a quiet border
+    D.qrcode(HELP_URL, 16, 36, 174, 3);
+    D.setTextColor(TFT_WHITE);
+    D.setCursor(230, 40);  D.print("Scan to open the project page.");
+    D.setCursor(230, 62);  D.print("README > SD card tells how to");
+    D.setCursor(230, 74);  D.print("make the map tiles:");
+    D.setCursor(230, 96);  D.print("/LoRa_Tracker/Maps/<REGION>/");
+    D.setCursor(230, 108); D.print("      <z>/<x>/<y>.png or .jpg");
+    D.setCursor(230, 130); D.print("256 px tiles, FAT32 card.");
+    D.setCursor(230, 142); D.print("T-Deck LoRa APRS tile packs");
+    D.setCursor(230, 154); D.print("work as they are.");
+    D.setTextColor(0xC618); D.setCursor(230, 184); D.print("github.com/radiohound/");
+    D.setCursor(230, 196); D.print("lora-aprs-pager");
+  }
+}
 static void mmAdd(const char *t, MenuAct a) { if (mainMenu.n < 7) { strncpy(mainMenu.label[mainMenu.n], t, 31); mainMenu.label[mainMenu.n][31] = 0; mainMenu.act[mainMenu.n++] = a; } }
 static void drawMainMenu(lgfx::LovyanGFX &D) {
   bool info = mainMenu.info1[0] != 0; int top = info ? (mainMenu.info3[0] ? 58 : 48) : 22;
@@ -488,7 +528,7 @@ static void render() {
   if (stView != 2 && nOrd && (selCall[0] == 0 || strcmp(stations[order[selIndex()]].call, selCall) != 0)) {
     strncpy(selCall, stations[order[0]].call, 9); selCall[9] = 0;     // nothing selected yet: take the first
   }
-  if (stView == 3) { drawFullList(D, W, H); if (mainMenu.on) drawMainMenu(D); if (fbOk) fb.pushSprite(0, 0); return; }    // full list: no map at all
+  if (stView == 3) { drawFullList(D, W, H); if (mainMenu.on) drawMainMenu(D); if (helpOn) drawHelp(D); if (fbOk) fb.pushSprite(0, 0); return; }    // full list: no map at all
   double cx, cy; toPx(clat, clon, z, cx, cy);
   double ox = cx - xc, oy = cy - H / 2.0;
   int tx0 = (int)floor((ox + x0) / 256.0), tx1 = (int)floor((ox + W - 1) / 256.0);
@@ -590,6 +630,7 @@ static void render() {
   drawClockBat(D, W - 3, H - 10, TFT_BLACK, true, true);
   drawBatIcon(D, W);
   if (mainMenu.on) drawMainMenu(D);
+  if (helpOn) drawHelp(D);
   if (fbOk) fb.pushSprite(0, 0);
 }
 
@@ -601,7 +642,7 @@ void setup() {
   rtcRead();                                // the time the RTC chip kept, until GPS gives a better one
   bool xpOk = xp.begin(ADDR_XL9555);
   if (xpOk) {
-    const uint8_t on[] = {XP_LORA_EN, XP_GPS_EN, XP_GPS_RST, XP_KB_EN, XP_KB_RST, XP_SD_EN, XP_GPIO_EN};
+    const uint8_t on[] = {XP_LORA_EN, XP_GPS_EN, XP_GPS_RST, XP_KB_EN, XP_KB_RST, XP_SD_EN};   // header rail (XP_GPIO_EN) stays off: nothing uses it
     for (uint8_t p : on) { xp.output(p, HIGH); delay(2); }
     xp.input(XP_SD_PULLEN);
   }
@@ -628,6 +669,9 @@ void setup() {
 
   // GPS on Serial1 (38400 baud), keyboard, and the radio (receive only)
   Serial1.begin(GPS_BAUD, SERIAL_8N1, PIN_GPS_RX, PIN_GPS_TX);
+  for (int i = 0; i < 4; i++) Serial1.write((uint8_t)0xFF);   // wake the GPS if a restart caught it in backup mode (harmless if it is awake)
+  delay(300);
+  gpsHint();
   keys.begin();
   digitalWrite(PIN_LORA_RST, LOW); delay(10); digitalWrite(PIN_LORA_RST, HIGH); delay(50);
   radio = new SX1262(new Module(PIN_LORA_CS, PIN_LORA_IRQ, PIN_LORA_RST, PIN_LORA_BUSY, SPI));
@@ -683,13 +727,93 @@ static PagerSettings loadSettings() {
 static int screenState = 0;                               // 0 full, 1 dim, 2 off
 static uint32_t lastActivity = 0;
 static long asleepSum = 0; static int asleepN = 0, asleepAvg = 0; static bool asleepHave = false;   // battery current sampled while the backlight was off
+// Power items, switched while the screen is off. The P serial command turns each off or on to measure what it saves.
+static bool setupMode = false;
+static bool pwrPanel = true, pwrSd = true;                  // true = this saving is active
+static bool pwrGps = true, pwrSleep = true;                 // pwrSleep: light sleep between events while the screen is off
+static uint32_t lastGpsByte = 0;                                  // when the GPS last sent a character (light sleep waits until it has been quiet a moment)
+// Position and time hint: after a power-up the receiver starts with an empty head. Tell it roughly where it is (the last saved fix) and the time (from the RTC), and it finds the sky faster.
+static void ubxSend(const uint8_t *f, size_t n) { Serial1.write(f, n); }
+static void gpsHint() {
+  if (demoMode) return;
+  Preferences p; p.begin("pgr-aprs", true); bool have = p.isKey("hlat") && p.isKey("hlon"); int32_t la = p.getInt("hlat", 0), lo = p.getInt("hlon", 0); p.end();
+  uint8_t f[40];
+  if (have) ubxSend(f, ubxMgaPos(la, lo, 10000000UL, f));   // the saved fix, told to be good to 100 km so a long trip since then does no harm
+  uint32_t t = utcNow();
+  if (t > 1700000000UL) ubxSend(f, ubxMgaTime(t, 5, f));    // the RTC time, good to a few seconds
+}
+static void gpsPosSave() {                                  // remember where we are, but rarely: after a move of 3 km or more, never more often than every 10 minutes
+  static double sLat = 999, sLon = 999; static uint32_t at = 0;
+  if (demoMode || !gps.fix.valid || gps.fix.sats < 4) return;
+  if (at && millis() - at < 600000UL) return;
+  if (sLat < 900 && geoDistKm(sLat, sLon, gps.fix.lat, gps.fix.lon) < 3.0) return;
+  Preferences p; p.begin("pgr-aprs", false); p.putInt("hlat", (int32_t)lround(gps.fix.lat * 1e7)); p.putInt("hlon", (int32_t)lround(gps.fix.lon * 1e7)); p.end();
+  sLat = gps.fix.lat; sLon = gps.fix.lon; at = millis();
+}
+// A small event log kept in memory (serial command PW prints it): what the power code did and when. It survives as long as the app keeps running,
+// so after a pager that "would not wake" is plugged in, the log shows what happened while it was asleep.
+struct PEv { uint32_t ms; char tag; int a, b; };
+static PEv plogBuf[96]; static int plogN = 0; static bool plogSleepOpen = false; static uint32_t plogTimerWakes = 0;
+static void plog(char tag, int a = 0, int b = 0) { PEv &e = plogBuf[plogN % 96]; e.ms = millis(); e.tag = tag; e.a = a; e.b = b; plogN++; plogSleepOpen = (tag == 's'); }
+static bool lightSlept = false;                              // the processor light-slept while the screen was off: the display's bus needs a full re-init on wake
+static int pinBits() { return digitalRead(PIN_LORA_IRQ) | (digitalRead(PIN_KB_INT) << 1) | (digitalRead(PIN_ROT_PRESS) << 2) | (digitalRead(PIN_ROT_A) << 3) | (digitalRead(PIN_ROT_B) << 4) | (digitalRead(PIN_GPS_RX) << 5); }
+static bool aSd = false, aPanel = false, aGps = false;     // what is applied right now
+// GPS while the screen is off: it sleeps (backup mode, about 0.03 mA) and wakes every minute for a fix, then sleeps again. It stays powered, so it keeps
+// its satellite data and wakes hot. While the screen is on it runs all the time. Wake-up is any byte sent to it.
+static const uint32_t GPS_POLL_MS = 60000, GPS_ON_MIN_MS = 6000, GPS_ON_MAX_MS = 30000;
+static bool gpsSleeping = false; static uint32_t gpsWakeAt = 0, gpsOnAt = 0, gpsEpochAtOn = 0;
+static void gpsBackup() {
+  uint8_t f[24]; ubxSend(f, ubxBackup(f)); gpsSleeping = true; gpsWakeAt = millis() + GPS_POLL_MS; plog('b');
+}
+static void gpsWake() {
+  for (int i = 0; i < 4; i++) Serial1.write((uint8_t)0xFF);
+  gpsSleeping = false; gpsOnAt = millis(); gpsEpochAtOn = gps.fix.epoch; plog('g');
+}
+static void gpsDuty() {                                     // called every pass while the screen is off
+  if (!aGps) return;
+  uint32_t now = millis();
+  if (gpsSleeping) { if ((int32_t)(now - gpsWakeAt) >= 0) gpsWake(); return; }
+  bool fresh = gps.fix.valid && gps.fix.epoch != gpsEpochAtOn;        // a fix from this wake-up, not the one from before
+  if ((fresh && now - gpsOnAt > GPS_ON_MIN_MS) || now - gpsOnAt > GPS_ON_MAX_MS) gpsBackup();
+}
+// What the screen being off switches off. The SD card's chip-select is floated too: driven high into an unpowered card it leaked about 14 mA.
+// The panel's sleep command saves about 13 mA.
+static uint32_t panelRetryUntil = 0, panelRetryAt = 0;      // after a wake, the panel's sleep-out is repeated for a few seconds (see below)
+static void powerApply() {
+  bool off = screenState == 2 && !setupMode;
+  bool wSd = off && pwrSd, wPanel = off && pwrPanel, wGps = off && pwrGps && !demoMode;
+  if (wSd != aSd || wPanel != aPanel || wGps != aGps) plog(off ? 'O' : 'o', wSd | (wPanel << 1) | (wGps << 2));
+  if (wGps != aGps) { if (wGps) { gpsSleeping = false; gpsOnAt = millis(); gpsEpochAtOn = gps.fix.epoch; } else if (gpsSleeping) gpsWake(); aGps = wGps; }
+  // Waking: the SD card first, then the panel. After light sleep the panel's first sleep-out command, sent straight away, did not take; the same command
+  // sent later (after the SD card was back) did. Going to sleep: panel first, then the SD card.
+  if (!wSd && aSd) {
+    xp.output(XP_SD_EN, HIGH); pinMode(PIN_SD_CS, OUTPUT); digitalWrite(PIN_SD_CS, HIGH); delay(10);
+    bool ok = SD.begin(PIN_SD_CS, SPI, 20000000) || SD.begin(PIN_SD_CS, SPI, 4000000); plog('d', ok);
+    aSd = false;
+  }
+  if (wPanel != aPanel) {
+    if (wPanel) tft.sleep();
+    else {
+      tft.wakeup(); delay(130);                                           // sleep out; the panel needs 120 ms before it takes more commands
+      tft.startWrite(); tft.writeCommand(0x29); tft.endWrite();           // display on
+      ledcSetup(7, 12000, 8); ledcAttachPin(PIN_DISP_BL, 7);               // the backlight's PWM channel is set up again: it can stop in light sleep
+      panelRetryUntil = millis() + 3000; panelRetryAt = millis();         // and screenTick repeats the sleep-out for a few seconds, in case the first did not take
+    }
+    aPanel = wPanel; plog('p', wPanel, (int)(ESP.getFreeHeap() / 1024));
+  }
+  if (wSd && !aSd) { SD.end(); xp.output(XP_SD_EN, LOW); pinMode(PIN_SD_CS, INPUT); aSd = true; }
+}
 static bool screenTouch() {
   if (screenState == 2 && asleepN >= 2) { asleepAvg = (int)(asleepSum / asleepN); asleepHave = true; }                                // returns true when the screen was off: the caller then ignores that key press
-  lastActivity = millis(); bool wasOff = screenState == 2;
-  if (screenState) { screenState = 0; tft.setBrightness(S.brightness); dirty = true; }
+  lastActivity = millis(); bool wasOff = screenState == 2; plog('t', wasOff, screenState);
+  if (screenState) { screenState = 0; powerApply(); tft.setBrightness(S.brightness); dirty = true; }
   return wasOff;
 }
 static void screenTick() {
+  if (panelRetryUntil && screenState != 2) {                  // the panel's sleep-out, repeated for 3 s after a wake (harmless when it is already out)
+    if ((int32_t)(millis() - panelRetryUntil) >= 0) panelRetryUntil = 0;
+    else if (millis() - panelRetryAt > 500) { panelRetryAt = millis(); tft.wakeup(); tft.setBrightness(S.brightness); dirty = true; plog('x'); }
+  }
   static bool slow = false;                                  // processor at 80 MHz when nothing was touched for 5 s, 240 MHz while in use (radio, GPS and beacons do not need more)
   bool wantSlow = millis() - lastActivity > 5000;
   if (wantSlow != slow) { slow = wantSlow; setCpuFrequencyMhz(slow ? 80 : 240); }
@@ -698,11 +822,11 @@ static void screenTick() {
   int want = (S.offSec && idle >= (uint32_t)S.offSec) ? 2 : ((S.dimSec && idle >= (uint32_t)S.dimSec) ? 1 : 0);
   if (want == 2 && screenState != 2) { asleepSum = 0; asleepN = 0; }
   if (want == 2) { static uint32_t sampledAt = 0; if (millis() - sampledAt > 2000) { sampledAt = millis(); uint8_t b[2]; if (i2cRead(ADDR_BQ27220, 0x0C, b, 2) == 0) { if (sampledAt - lastActivity > 6000) { asleepSum += (int16_t)(b[0] | (b[1] << 8)); asleepN++; } } } }
-  if (want != screenState) { screenState = want; tft.setBrightness(want == 2 ? 0 : (want == 1 ? std::min(S.brightness, 20) : S.brightness)); }
+  if (want != screenState) { screenState = want; powerApply(); tft.setBrightness(want == 2 ? 0 : (want == 1 ? std::min(S.brightness, 20) : S.brightness)); }
 }
-static uint8_t keyFiltered() { uint8_t e = keys.poll(); if (e && screenTouch()) return 0; return e; }
+static uint8_t keyFiltered() { uint8_t e = keys.poll(); if (e) plog('k', e); if (e && screenTouch()) return 0; return e; }
 static void applySettings() {
-  screenState = 0; lastActivity = millis();
+  screenState = 0; powerApply(); lastActivity = millis();
   tft.setBrightness(S.brightness);
   haptic.enabled = S.haptic; M.setCall(S.call);
   if (radioOk) radio->setOutputPower(S.txDbm);
@@ -712,7 +836,6 @@ static void applySettings() {
 // ---- Phone setup: the pager opens its own WiFi hotspot and serves the setup page (Enter key). Off again when you leave. ----
 static WebServer web(80);
 static DNSServer dns;     // answers every name with the pager's own address, so phones show the "sign in to network" prompt and open the page
-static bool setupMode = false;
 static char apSsid[16], apPass[10];
 static uint32_t savedAt = 0;
 // diagnostics shown on the setup screen: what the hotspot has seen so far
@@ -820,7 +943,12 @@ static int txFrame(const unsigned char *f, size_t len) {
     if (c == RADIOLIB_CHANNEL_FREE) free = true; else delay(300 + (esp_random() % 1200));
   }
   if (!free) { radio->startReceive(); return 1; }
+  // On battery the knob lines pick up transmitter noise and their pin-change interrupts can fire thousands of times a second, which trips the
+  // interrupt watchdog (seen on this pager by the Meshtastic project). So the knob interrupts are off while we transmit.
+  detachInterrupt(PIN_ROT_A); detachInterrupt(PIN_ROT_B);
   int st = radio->transmit(f, len);
+  kLast = (digitalRead(PIN_ROT_A) << 1) | digitalRead(PIN_ROT_B); kAcc = 0; knobSteps = 0;
+  attachInterrupt(PIN_ROT_A, knobIsr, CHANGE); attachInterrupt(PIN_ROT_B, knobIsr, CHANGE);
   rxFlag = false;                                   // the TX-done interrupt shares the receive pin
   radio->startReceive();
   M.noteTx(millis());
@@ -893,13 +1021,14 @@ static void openMainMenu() {
     } else { strcpy(mainMenu.info1, "Battery current: no reading from the gauge"); } }
   mmAdd("Messages", MA_MESSAGES); mmAdd("Phone setup", MA_SETUP); mmAdd("Beacon now", MA_BEACON);
   mmAdd(autoBeacon ? "Auto-beacon is ON: turn off" : "Auto-beacon is OFF: turn on", MA_AUTO);
-  mmAdd("Power off", MA_POWEROFF_ASK); mmAdd("Close menu", MA_CLOSE);
+  mmAdd("Help: keys and map card", MA_HELP); mmAdd("Power off", MA_POWEROFF_ASK); mmAdd("Close menu", MA_CLOSE);
   dirty = true;
 }
 static void mainMenuAct(MenuAct a) {
   mainMenu.on = false; dirty = true;
   switch (a) {
     case MA_MESSAGES: ui.open(); break;
+    case MA_HELP: helpOn = true; helpPage = 0; break;
     case MA_SETUP: startSetup(); drawSetup(); break;
     case MA_BEACON: if (beacon.manualOk(millis())) sendBeacon(); else say("Wait: beacon just sent"); break;
     case MA_AUTO: autoBeacon = !autoBeacon; if (autoBeacon) beacon.start(millis()); say(autoBeacon ? "Auto beacon ON" : "Auto beacon off"); break;
@@ -916,12 +1045,43 @@ static void centerOnGps() {
   clat = gps.fix.lat; clon = gps.fix.lon; haptic.play(H_CLICK); dirty = true;
 }
 
+// Light sleep while the screen is off: the processor stops until the radio hears a packet (DIO1), a key or the knob moves, the GPS starts talking,
+// or one second passes for the timers. Never with USB connected (the serial port would vanish) or in phone setup.
+extern volatile int32_t knobSteps; extern volatile uint8_t kLast;
+static void lightSleepOnce() {
+  uint8_t st = 0; if (i2cRead(ADDR_BQ25896, 0x0B, &st, 1) != 0 || (st >> 5) != 0) { delay(10); return; }   // charger unreadable or power on VBUS: stay awake
+  if (digitalRead(PIN_LORA_IRQ)) { rxFlag = true; delay(1); return; }                                  // a packet is already waiting
+  esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+  gpio_wakeup_enable((gpio_num_t)PIN_LORA_IRQ, GPIO_INTR_HIGH_LEVEL);
+  if (digitalRead(PIN_KB_INT)) gpio_wakeup_enable((gpio_num_t)PIN_KB_INT, GPIO_INTR_LOW_LEVEL);
+  if (digitalRead(PIN_ROT_PRESS)) gpio_wakeup_enable((gpio_num_t)PIN_ROT_PRESS, GPIO_INTR_LOW_LEVEL);
+  gpio_wakeup_enable((gpio_num_t)PIN_ROT_A, digitalRead(PIN_ROT_A) ? GPIO_INTR_LOW_LEVEL : GPIO_INTR_HIGH_LEVEL);
+  gpio_wakeup_enable((gpio_num_t)PIN_ROT_B, digitalRead(PIN_ROT_B) ? GPIO_INTR_LOW_LEVEL : GPIO_INTR_HIGH_LEVEL);
+  if (digitalRead(PIN_GPS_RX)) gpio_wakeup_enable((gpio_num_t)PIN_GPS_RX, GPIO_INTR_LOW_LEVEL);   // a start bit: the GPS is sending
+  esp_sleep_enable_gpio_wakeup();
+  esp_sleep_enable_timer_wakeup(1000000ULL);
+  Serial.flush();
+  if (!plogSleepOpen) plog('s', pinBits());                                                  // one entry per stretch of sleeping; plain one-second timer wakes are only counted
+  esp_light_sleep_start();
+  lightSlept = true;
+  { int cause = (int)esp_sleep_get_wakeup_cause(); if (cause == ESP_SLEEP_WAKEUP_TIMER) plogTimerWakes++; else plog('w', cause, pinBits()); }
+  // gpio_wakeup_enable() had made these pins level-triggered interrupts: undo that at once, or a pin still at its wake level fires its interrupt forever (watchdog reset)
+  for (int pin : {PIN_LORA_IRQ, PIN_KB_INT, PIN_ROT_PRESS, PIN_ROT_A, PIN_ROT_B, PIN_GPS_RX}) gpio_wakeup_disable((gpio_num_t)pin);
+  gpio_set_intr_type((gpio_num_t)PIN_LORA_IRQ, GPIO_INTR_POSEDGE);                       // the radio library uses a rising edge
+  gpio_set_intr_type((gpio_num_t)PIN_ROT_A, GPIO_INTR_ANYEDGE); gpio_set_intr_type((gpio_num_t)PIN_ROT_B, GPIO_INTR_ANYEDGE);   // the knob uses CHANGE
+  for (int pin : {PIN_KB_INT, PIN_ROT_PRESS, PIN_GPS_RX}) gpio_set_intr_type((gpio_num_t)pin, GPIO_INTR_DISABLE);                // these are polled
+  if (digitalRead(PIN_LORA_IRQ)) rxFlag = true;                                              // the edge interrupt may not have run during sleep
+  uint8_t ks = (digitalRead(PIN_ROT_A) << 1) | digitalRead(PIN_ROT_B);
+  if (ks != kLast) { kLast = ks; screenTouch(); }                                            // the knob moved: wake the screen, the turn itself is ignored
+}
 void loop() {
   if (root == "") { delay(1000); return; }
-  delay(screenState ? 10 : 2);                  // let the processor idle between passes (the radio, GPS and knob are interrupt or buffer driven)
+  if (pwrSleep && screenState == 2 && !setupMode && !demoMode && radioOk && millis() - lastGpsByte > 400) lightSleepOnce();
+  else delay(screenState ? 10 : 2);                  // let the processor idle between passes (the radio, GPS and knob are interrupt or buffer driven)
 
   // GPS characters
   while (Serial1.available()) {
+    lastGpsByte = millis();
     if (demoMode) { Serial1.read(); continue; }                // demo: the real GPS is ignored
     if (!gps.feed((char)Serial1.read())) continue;
     // only redraw when my dot would move at least a pixel at this zoom, or the fix appeared/vanished
@@ -949,8 +1109,49 @@ void loop() {
           }
         } else if (cmd[0] == 'V') { int v = atoi(cmd + 1); if (v >= 0 && v <= 3) { stView = v; if (stView != 0 && mode == M_LIST) mode = M_PANX; dirty = true; } }
         else if (cmd[0] == 'C') { strncpy(selCall, cmd + 1, 9); selCall[9] = 0; lastKnobAt = millis(); dirty = true; }
-        else if (cmd[0] == 'X') { ui.close(); mainMenu.on = false; dirty = true; }
+        else if (cmd[0] == 'X') { ui.close(); mainMenu.on = false; helpOn = false; dirty = true; }
+        else if (cmd[0] == 'H') { helpOn = true; helpPage = atoi(cmd + 1) ? 1 : 0; dirty = true; }
         else if (cmd[0] == 'D') { double la, lo; if (sscanf(cmd + 1, "%lf,%lf", &la, &lo) == 2) { loadDemo(la, lo); clat = la; clon = lo; dirty = true; Serial.println("demo mode on: simulated stations, nothing is transmitted until RST"); } }
+        else if (cmd[0] == 'P') {
+          if (cmd[1] == 'S') { pwrSd = cmd[2] == '1'; }
+          else if (cmd[1] == 'D') { pwrPanel = cmd[2] == '1'; }
+          else if (cmd[1] == 'G') { pwrGps = cmd[2] == '1'; }
+          else if (cmd[1] == 'N') {                                               // count what the GPS sends for 12 s, in 1 s steps
+            uint32_t t0 = millis(); int sec[12] = {0};
+            while (millis() - t0 < 12000) { while (Serial1.available()) { Serial1.read(); int k = (millis() - t0) / 1000; if (k < 12) sec[k]++; } delay(5); }
+            Serial.print("GPS bytes per second:"); for (int i = 0; i < 12; i++) Serial.printf(" %d", sec[i]); Serial.println();
+          }
+          else if (cmd[1] == 'B') {                                               // screen repairs, tried one at a time while the screen is dark
+            int m = atoi(cmd + 2); lastActivity = millis();                  // a repair counts as activity: the screen must not time out while we watch
+            if (m == 0) { ledcSetup(7, 12000, 8); ledcAttachPin(PIN_DISP_BL, 7); tft.setBrightness(S.brightness); }
+            else if (m == 1) { tft.wakeup(); delay(130); tft.setBrightness(S.brightness); }
+            else if (m == 2) { tft.startWrite(); tft.writeCommand(0x29); tft.endWrite(); }
+            else if (m == 3) { tft.init(); tft.setRotation(PAGER_ROTATION); tft.setBrightness(S.brightness); }
+            dirty = true;
+          }
+          else if (cmd[1] == 'O') {                                               // PO<seconds>: screen-off time, saved (dim comes at half of it)
+            int v = atoi(cmd + 2);
+            if (v >= 0 && v <= 3600) { S.offSec = v; if (v && S.dimSec >= v) S.dimSec = v / 2; saveSettings(S); applySettings(); Serial.printf("screen off after %d s, dim after %d s (saved)\n", S.offSec, S.dimSec); }
+          }
+          else if (cmd[1] == 'W') {                                               // the event log, oldest first
+            int n = plogN < 96 ? plogN : 96, first = plogN - n; uint32_t now = millis();
+            Serial.printf("event log: %d events, %lu timer wakes, now %lu ms\n", plogN, (unsigned long)plogTimerWakes, (unsigned long)now);
+            for (int i = 0; i < n; i++) { PEv &e = plogBuf[(first + i) % 96]; Serial.printf("  %9lu ms  %c  %d %d\n", (unsigned long)e.ms, e.tag, e.a, e.b); }
+          }
+          else if (cmd[1] == 'L') { pwrSleep = cmd[2] == '1'; }
+          else if (cmd[1] == 'A') {
+            int n = atoi(cmd + 2); if (n < 1) n = 10; if (n > 3600) n = 3600;
+            long sum = 0; int lo = 32767, hi = -32768, k = 0;
+            for (int i = 0; i < n; i++) {
+              delay(1000); uint8_t b[2];
+              if (i2cRead(ADDR_BQ27220, 0x14, b, 2) == 0) { int v = (int16_t)(b[0] | (b[1] << 8)); sum += v; k++; if (v < lo) lo = v; if (v > hi) hi = v; }
+            }
+            uint8_t vb[2]; int mv = i2cRead(ADDR_BQ27220, 0x08, vb, 2) == 0 ? (vb[0] | (vb[1] << 8)) : 0;
+            if (k) Serial.printf("avg current: %d mA  (min %d, max %d, %d samples, battery %d mV)\n", (int)(sum / k), lo, hi, k, mv);
+            else Serial.println("avg current: no answer");
+          }
+          Serial.printf("power: panel sleep %s, SD rail %s, GPS sleep %s, light sleep %s, screen %d, cpu %d MHz\n", pwrPanel ? "on" : "off", pwrSd ? "on" : "off", pwrGps ? "on" : "off", pwrSleep ? "on" : "off", screenState, getCpuFrequencyMhz());
+        }
         else if (cmd[0] == 'R') { Serial.println("restarting"); delay(100); esp_restart(); }
         continue;
       }
@@ -958,7 +1159,7 @@ void loop() {
       else if (c == 'B') { uint8_t b[2]; auto w = [&](uint8_t r, const char *n, bool sgn) { if (i2cRead(ADDR_BQ27220, r, b, 2) == 0) { int v = b[0] | (b[1] << 8); Serial.printf("gauge %s = %d\n", n, sgn ? (int)(int16_t)v : v); } else Serial.printf("gauge %s = no answer\n", n); };
                            w(0x08, "voltage mV", false); w(0x2C, "charge %", false); w(0x0C, "current 0x0C mA", true); w(0x14, "avg current 0x14 mA", true); w(0x0A, "flags", false); w(0x12, "full capacity mAh", false); w(0x10, "remaining mAh", false); w(0x16, "time to empty min", false); }
       else if (c == 'M' && !ui.active() && !setupMode) { ui.open(); Serial.println("ui: opened by serial"); }
-      else if (c == 'G' || c == 'V' || c == 'C' || c == 'X' || c == 'D' || c == 'R') { cmd[0] = (char)c; cmdN = 1; }
+      else if (c == 'G' || c == 'V' || c == 'C' || c == 'X' || c == 'D' || c == 'R' || c == 'P' || c == 'H') { cmd[0] = (char)c; cmdN = 1; }
     }
   }
 
@@ -989,7 +1190,7 @@ void loop() {
 
   if (setupMode) { setupTick(); return; }   // while the phone setup screen is open, nothing else runs (receiving still does)
 
-  screenTick();
+  screenTick(); gpsPosSave(); gpsDuty();
   { static uint32_t clkTickAt = 0; static int lastMin = -1, lastPct = -2; static bool lastChg = false;
     if (millis() - clkTickAt > 1000) {
       clkTickAt = millis(); clockTick();
@@ -1008,6 +1209,7 @@ void loop() {
   if (uint8_t e = keyFiltered()) {
     Serial.printf("key raw=%u %s char='%c' ui=%d\n", e & 0x7F, (e & 0x80) ? "down" : "up", keyLookup(e & 0x7F).ch ? keyLookup(e & 0x7F).ch : '?', (int)ui.scr);
     if (ui.active()) { ui.key(e & 0x7F, e & 0x80); if (!ui.active()) dirty = true; }
+    else if (helpOn) { if (e & 0x80) { if ((e & 0x7F) == KEY_ENTER || (e & 0x7F) == KEY_BACKSPACE) helpOn = false; else helpPage = (helpPage + 1) % 2; dirty = true; } }
     else if (mainMenu.on) {
       if (e & 0x80) { if ((e & 0x7F) == KEY_ENTER) mainMenuAct(mainMenu.act[mainMenu.sel]); else if ((e & 0x7F) == KEY_BACKSPACE) { mainMenu.on = false; dirty = true; } }
     }
@@ -1033,13 +1235,14 @@ void loop() {
     if (pressed && !wasPressed && screenTouch()) ignorePress = true;
     if (ignorePress) { if (!pressed) ignorePress = false; pressed = false; } }
   if (pressed && !wasPressed) { pressedAt = millis(); longDone = false; }
-  if (pressed && !longDone && millis() - pressedAt >= 600) { longDone = true; if (mainMenu.on) { mainMenu.on = false; dirty = true; haptic.play(H_CLICK); } else if (ui.active()) { ui.press(true); haptic.play(H_CLICK); if (!ui.active()) dirty = true; } else if (stView == 3) { stView = 0; haptic.play(H_CLICK); say(VIEW_NAME[0]); dirty = true; } else centerOnGps(); }
-  if (!pressed && wasPressed && !longDone) { if (mainMenu.on) { haptic.play(H_CLICK); mainMenuAct(mainMenu.act[mainMenu.sel]); } else if (ui.active()) { ui.press(false); haptic.play(H_TICK); if (!ui.active()) dirty = true; } else if (stView == 3) { haptic.play(H_CLICK); ui.open(); ui.openCompose(selCall); } else { mode = nextMode(mode); haptic.play(H_TICK); dirty = true; } }
+  if (pressed && !longDone && millis() - pressedAt >= 600) { longDone = true; if (helpOn) { helpOn = false; dirty = true; } else if (mainMenu.on) { mainMenu.on = false; dirty = true; haptic.play(H_CLICK); } else if (ui.active()) { ui.press(true); haptic.play(H_CLICK); if (!ui.active()) dirty = true; } else if (stView == 3) { stView = 0; haptic.play(H_CLICK); say(VIEW_NAME[0]); dirty = true; } else centerOnGps(); }
+  if (!pressed && wasPressed && !longDone) { if (helpOn) { helpOn = false; dirty = true; } else if (mainMenu.on) { haptic.play(H_CLICK); mainMenuAct(mainMenu.act[mainMenu.sel]); } else if (ui.active()) { ui.press(false); haptic.play(H_TICK); if (!ui.active()) dirty = true; } else if (stView == 3) { haptic.play(H_CLICK); ui.open(); ui.openCompose(selCall); } else { mode = nextMode(mode); haptic.play(H_TICK); dirty = true; } }
   wasPressed = pressed;
 
   int32_t d; noInterrupts(); d = knobSteps; knobSteps = 0; interrupts();
   if (d && screenTouch()) d = 0;
-  if (d && mainMenu.on) { mainMenu.sel = constrain(mainMenu.sel + (d > 0 ? -1 : 1), 0, mainMenu.n - 1); haptic.play(H_TICK); dirty = true; }
+  if (d && helpOn) { helpPage = (helpPage + 1) % 2; haptic.play(H_TICK); dirty = true; }
+  else if (d && mainMenu.on) { mainMenu.sel = constrain(mainMenu.sel + (d > 0 ? -1 : 1), 0, mainMenu.n - 1); haptic.play(H_TICK); dirty = true; }
   else if (d && ui.active()) { for (int i = 0, n = abs(d); i < n; i++) ui.knob(d > 0 ? 1 : -1); haptic.play(H_TICK); }
   else if (d) {
     haptic.play(H_TICK);

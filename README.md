@@ -37,12 +37,18 @@ firmware's demo mode (`DEMO MODE` is shown on the screen, and nothing is transmi
   battery shape in the top right corner shows the charge in green (yellow below 30 %, red below 15 %) and a `+` while charging.
 - **Screen timeout.** The screen dims, then the backlight goes off (both times are settable, or never). There is no lock screen: any key or knob turn
   wakes it at once, showing what was there. After the backlight was fully off, that first touch only wakes it. A new message also wakes it.
+- **Low power with the screen off.** The processor light-sleeps between events and still hears every packet; the SD card and the display panel are
+  powered down; the GPS sleeps and wakes about once a minute for a fix (so a beacon sent while the screen is off uses a position up to a minute
+  old). Measured on one pager: **about 24 mA with the screen off, against about 65 mA before** (see [Battery life](#battery-life)). USB disables
+  the sleep, so the serial port stays up.
+- **Help screen.** Backspace, then **Help**: the keys and knob actions, and a QR code for the map SD card guide (turn the knob for the second page).
 - **Mic-E** position packets (used by many handheld and mobile radios) are decoded, including blanked-digit position ambiguity; checked against
   301 real packets with an independent decoder.
 - **Haptic feedback** on knob clicks, new messages, acks and errors.
 - **Screenshots over USB** for documentation (`tools/screenshot.py`). The firmware also answers a few one-letter test commands on USB serial
   (`S` screenshot, `M` open Messages, `G<lat>,<lon>,<zoom>` map position, `V<0-3>` station view, `C<call>` select a station, `X` close menus,
-  `D<lat>,<lon>` demo mode with simulated stations (never transmits), `B` read the battery gauge, `R` restart). Send them only from your own computer.
+  `D<lat>,<lon>` demo mode with simulated stations (never transmits), `B` read the battery gauge, `R` restart), and `P...` commands for power
+  testing (see [docs/energy-saving.md](docs/energy-saving.md)). Send them only from your own computer.
 
 The firmware only **reads** the SD card. Settings and messages live in the pager's own flash.
 
@@ -73,7 +79,7 @@ The rotary knob works everywhere on its own; the keyboard types text and gives s
 | `C` | centre on me |
 | `T` | auto-beacon on / off (off at every power-on unless set in setup) |
 | `B` | send one beacon now |
-| `Backspace` | main menu: messages, phone setup, beacon now, auto-beacon, power off |
+| `Backspace` | main menu: messages, phone setup, beacon now, auto-beacon, help, power off |
 | `Enter` | phone setup |
 | `P` | send a screenshot over USB (with `tools/screenshot.py`) |
 
@@ -101,6 +107,16 @@ This firmware **transmits** on 433.775 MHz (the LoRa APRS frequency) at up to 22
 - **Turn on:** hold the **POWER** button for about a second (bottom edge: RST, BOOT, **POWER**, SD socket, USB-C), or plug in USB.
   It starts like any power-on: your settings and messages are kept, auto-beacon is off unless you set it to start on.
 - RST restarts the application; BOOT with RST is download mode for flashing (see below). Neither switches the pager off.
+
+### Battery life
+
+With the screen off the pager used about 65 mA before the power work and about **24 mA now** (screen on: about 108 mA). On the 1500 mAh cell that
+is roughly 2 to 2.5 days of listening with the screen off, against about 23 hours. One pager, read from the fuel gauge on battery, so treat it
+as an estimate; the GPS is the biggest remaining unknown (it works harder indoors).
+
+What saves power, from most to least: let the screen time out (shorter is better), keep USB unplugged, lower the brightness, beacon less often,
+and use **Power off** (Backspace) when it will not be used for days. What was measured and why, including a leak that cost about 40 mA and how to
+avoid it in other firmware for this board, is in [docs/energy-saving.md](docs/energy-saving.md).
 
 ## Hardware
 
@@ -139,9 +155,9 @@ press RST alone to start the new firmware.
 **Flashing a release file instead of building** (see the Releases page). Put the pager in download mode first, then, with `esptool` installed:
 
     # first install (or to start clean): the complete image. This ERASES the saved settings (call sign and so on)
-    esptool.py --chip esp32s3 --port <PORT> write_flash 0x0 lora-aprs-pager-v0.1.0-alpha.1-tlora-pager-sx1262.bin
+    esptool.py --chip esp32s3 --port <PORT> write_flash 0x0 lora-aprs-pager-v0.1.0-alpha.2-tlora-pager-sx1262.bin
     # update an already installed pager and keep its settings: only the application
-    esptool.py --chip esp32s3 --port <PORT> write_flash 0x10000 lora-aprs-pager-v0.1.0-alpha.1-tlora-pager-sx1262-app-only.bin
+    esptool.py --chip esp32s3 --port <PORT> write_flash 0x10000 lora-aprs-pager-v0.1.0-alpha.2-tlora-pager-sx1262-app-only.bin
 
 First start: press Enter, join the pager's hotspot from your phone (scan the QR code), open `http://192.168.4.1` and save your call sign.
 Until then the pager listens and shows the map but will not transmit.
@@ -157,10 +173,10 @@ Any set of 256 px tiles in the standard `<z>/<x>/<y>` layout works: the tile pac
 
 The parsers and engines are plain C++ and are tested on a PC:
 
-    for t in aprs geo settings messaging emoticons textedit clock; do
+    for t in aprs geo settings messaging emoticons textedit clock ubx; do
       c++ -std=c++17 -I src test/host/test_$t.cpp -o /tmp/test_$t && /tmp/test_$t; done
 
-They cover the APRS frame parser and beacon builder, GPS sentences, distance and bearing, the settings validation, the messaging engine
+They cover the APRS frame parser and beacon builder, GPS sentences, the u-blox messages sent to the GPS, distance and bearing, the settings validation, the messaging engine
 (including a message and its ack going through two engines), the emoticon matcher, and the keyboard map and text entry (key sequences with the real key numbers).
 
 ## Layout
@@ -168,7 +184,7 @@ They cover the APRS frame parser and beacon builder, GPS sentences, distance and
 | | |
 |---|---|
 | `src/app/app.cpp` | the application: map, stations, beacon, setup hotspot, glue |
-| `src/aprs.h`, `src/nmea.h`, `src/geo.h` | APRS frames, GPS sentences, distance / bearing (plain C++) |
+| `src/aprs.h`, `src/nmea.h`, `src/geo.h`, `src/ubx.h` | APRS frames, GPS sentences, distance / bearing, u-blox GPS messages (plain C++) |
 | `src/messaging.h`, `src/msg_ui.h`, `src/emoticons.h` | messaging engine, its screens, emoticon matching |
 | `src/settings_core.h`, `src/webui.h` | settings and their validation, the phone setup page |
 | `src/beacon.h`, `src/haptic.h`, `src/inputs.h`, `src/keymap.h` | beacon timing, haptics, knob and keyboard |
@@ -176,17 +192,19 @@ They cover the APRS frame parser and beacon builder, GPS sentences, distance and
 | `tools/` | icon builders, `screenshot.py`, `mockup/` (screenshot in a picture of the device), `count_vec.py` |
 | `docs/messaging.md` | the messaging design and the reasoning behind it |
 | `docs/benchmarks.md` | tile and vector measurements |
+| `docs/energy-saving.md` | where the power goes on this board, what was measured, how to save energy |
 
 ## Not done yet
 
 Other position formats (weather, telemetry and others) are not decoded; bulletins, group text and meeting-spot objects are
 designed but not built; the LilyGO menu cannot be kept alongside this application (it needs a
-two-app flash layout); the tocall is the experimental `APZPGR` (a registered one is to be requested); vector maps are a later phase.
+two-app flash layout); the tocall is the experimental `APZPGR` (a registered one is to be requested); vector maps are a later phase; the GPS wake
+interval while the screen is off is a constant in the code, not a setting yet.
 
 
 ## Releases
 
-The first release is **v0.1.0-alpha.1**, a testing release: it is meant for people who are comfortable building firmware and who hold an amateur radio licence.
+The latest release is **v0.1.0-alpha.2** (about 24 mA with the screen off instead of about 65 mA; the first was v0.1.0-alpha.1). Both are testing releases, meant for people who are comfortable building firmware and who hold an amateur radio licence.
 Bug reports are welcome. Not done yet is listed above; the registered tocall (the pager currently transmits as the experimental `APZPGR`, see
 `docs/tocall-request.md`) is one of the first things to change.
 
