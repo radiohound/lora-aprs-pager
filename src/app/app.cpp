@@ -4,6 +4,9 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include "motion.h"
+#include "../rxduty.h"
+static const int LORA_SF = 12; static const float LORA_BW_KHZ = 125.0f;   // the channel: LoRa APRS 433.775 MHz, SF12, 125 kHz, 8-symbol preamble
+static void rxApply();
 #include <SPI.h>
 #include <SD.h>
 #include <vector>
@@ -165,11 +168,11 @@ static void clockTick() {                                // once a second: take 
   if (!batAt || millis() - batAt > 5000) {
     batAt = millis(); uint8_t b[2];
     if (i2cRead(ADDR_BQ27220, 0x2C, b, 2) == 0) { int p = b[0] | (b[1] << 8); batPct = p > 100 ? 100 : p; }
-    uint8_t st; if (i2cRead(ADDR_BQ25896, 0x0B, &st, 1) == 0) { int cs = (st >> 3) & 3; batCharging = cs == 1 || cs == 2; }   // 1 = pre-charge, 2 = fast charge
+    uint8_t st; if (i2cRead(ADDR_BQ25896, 0x0B, &st, 1) == 0) { int cs = (st >> 3) & 3; batCharging = cs >= 1; }   // 1 = pre-charge, 2 = fast charge, 3 = charge done (still on USB: the bolt stays, as on a phone)
   }
 }
 // Battery shape for the top right corner: white outline, green fill for the charge (yellow below 30%, red below 15%), black for the empty part,
-// a white "+" on it while charging. Drawn only when switched on in the setup page.
+// a white lightning bolt on it while the charger is working or the battery is full on USB. Drawn only when switched on in the setup page.
 static void drawBatIcon(lgfx::LovyanGFX &D, int W) {
   if (!S.batIcon || batPct < 0) return;
   const int w = 28, h = 12, x = W - w - 5, y = 2;
@@ -179,7 +182,15 @@ static void drawBatIcon(lgfx::LovyanGFX &D, int W) {
   D.fillRect(x + 1, y + 1, w - 2, h - 2, TFT_BLACK);
   int fw = (w - 4) * batPct / 100; if (fw < 1 && batPct > 0) fw = 1;
   D.fillRect(x + 2, y + 2, fw, h - 4, c);
-  if (batCharging) { D.setTextSize(1); D.setTextColor(TFT_WHITE); D.setCursor(x + w / 2 - 2, y + 2); D.print("+"); }
+  if (batCharging) {                                                     // white lightning bolt with a black edge, like a phone; 5 x 7 pixels in the middle of the body
+    static const char *const BOLT[7] = {"...XX", "..XX.", ".XX..", "XXXXX", "..XX.", ".XX..", "XX..."};
+    const int bx = x + w / 2 - 2, by = y + 3;
+    for (int pass = 0; pass < 2; pass++)
+      for (int r = 0; r < 7; r++) for (int k = 0; k < 5; k++) if (BOLT[r][k] == 'X') {
+        if (pass == 0) { D.drawPixel(bx + k - 1, by + r, TFT_BLACK); D.drawPixel(bx + k + 1, by + r, TFT_BLACK); D.drawPixel(bx + k, by + r - 1, TFT_BLACK); D.drawPixel(bx + k, by + r + 1, TFT_BLACK); }
+        else D.drawPixel(bx + k, by + r, TFT_WHITE);
+      }
+  }
 }
 // "Mon 23 Nov 14:05  87%+" (or just the time) drawn with its left edge at x; returns the width in pixels
 static int drawClockBat(lgfx::LovyanGFX &D, int x, int y, uint16_t bg, bool withDate, bool rightEdge = false) {   // rightEdge: x is where the text ends
@@ -682,7 +693,7 @@ void setup() {
   keys.begin();
   digitalWrite(PIN_LORA_RST, LOW); delay(10); digitalWrite(PIN_LORA_RST, HIGH); delay(50);
   radio = new SX1262(new Module(PIN_LORA_CS, PIN_LORA_IRQ, PIN_LORA_RST, PIN_LORA_BUSY, SPI));
-  if (radio->begin(433.775, 125.0, 12, 5, 0x12, 10, 8, 3.0) == RADIOLIB_ERR_NONE) {
+  if (radio->begin(433.775, LORA_BW_KHZ, LORA_SF, 5, 0x12, 10, 8, 3.0) == RADIOLIB_ERR_NONE) {
     radio->setDio2AsRfSwitch(true); radio->setCurrentLimit(140.0); radio->setOutputPower(S.txDbm);
     radio->setPacketReceivedAction(onRx); radio->startReceive(); radioOk = true;
   }
@@ -719,7 +730,7 @@ static void saveSettings(const PagerSettings &x) {
   p.putString("txdbm", String(x.txDbm)); p.putString("moving", String(x.movingSec)); p.putString("stationary", String(x.stationaryMin));
   p.putString("movem", String(x.moveMetres)); p.putString("auto", x.autoAtBoot ? "1" : "0"); p.putString("haptic", x.haptic ? "1" : "0");
   p.putString("bright", String(x.brightness)); p.putString("tz", String(x.utcOffset)); p.putString("dst", x.usDst ? "1" : "0"); p.putString("baticon", x.batIcon ? "1" : "0"); p.putString("dim", String(x.dimSec)); p.putString("off", String(x.offSec));
-  p.putString("gpssl", x.gpsSleep ? "1" : "0"); p.putString("gpsmv", String(x.gpsMoveSec)); p.putString("gpsst", String(x.gpsStillMin)); p.putString("gpsmo", x.gpsMotion ? "1" : "0"); p.putString("gpsbk", String(x.gpsBackstopMin)); p.end();
+  p.putString("gpssl", x.gpsSleep ? "1" : "0"); p.putString("gpsmv", String(x.gpsMoveSec)); p.putString("gpsst", String(x.gpsStillMin)); p.putString("gpsmo", x.gpsMotion ? "1" : "0"); p.putString("gpsbk", String(x.gpsBackstopMin)); p.putString("rxd", x.rxDuty ? "1" : "0"); p.end();
 }
 static PagerSettings loadSettings() {
   PagerSettings x; Preferences p; p.begin("pgr-aprs", true);
@@ -734,7 +745,7 @@ static PagerSettings loadSettings() {
 // When the backlight was fully off, that first touch only wakes the screen (a key pressed in a pocket does nothing); when merely dimmed it also acts.
 static int screenState = 0;                               // 0 full, 1 dim, 2 off
 static uint32_t lastActivity = 0;
-static long asleepSum = 0; static int asleepN = 0, asleepAvg = 0; static bool asleepHave = false;   // battery current sampled while the backlight was off
+static long asleepSum = 0; static int asleepN = 0, asleepAvg = 0; static bool asleepHave = false; static int asleepMin = 0, asleepMax = -32768, asleepUsbSkipped = 0; static bool usbPresent();   // battery current sampled while the backlight was off
 // Power items, switched while the screen is off. The P serial command turns each off or on to measure what it saves.
 static bool setupMode = false;
 static bool pwrPanel = true, pwrSd = true;                  // true = this saving is active
@@ -787,9 +798,14 @@ static bool gpsSleeping = false; static uint32_t gpsWakeAt = 0, gpsOnAt = 0, gps
 static GpsAdaptive gpsAd;                                              // adaptive wake interval, see src/gpsduty.h (settings: moving seconds, still minutes)
 static void gpsBackup(bool gotFix) {
   gpsIntervalMs = gpsAdaptiveNext(gpsAd, gotFix && gps.fix.valid, gps.fix.lat, gps.fix.lon, S.gpsMoveSec, S.gpsStillMin);
-  uint8_t f[24]; ubxSend(f, ubxBackup(f)); gpsSleeping = true; gpsWakeAt = millis() + gpsIntervalMs; plog('b', (int)(gpsIntervalMs / 1000), gpsAd.still);
+  uint8_t f[24]; ubxSend(f, ubxBackup(f)); Serial1.flush(); delay(20);
+  // With the GPS in backup its serial line floats. The processor's serial port then sees noise and every restart so far was an interrupt-watchdog reset inside light sleep
+  // about 12 to 14 s after this point (suspected cause, not proven). So: close the port, hold both lines idle-high, reopen at wake-up.
+  Serial1.end(); pinMode(PIN_GPS_RX, INPUT_PULLUP); pinMode(PIN_GPS_TX, OUTPUT); digitalWrite(PIN_GPS_TX, HIGH);
+  gpsSleeping = true; gpsWakeAt = millis() + gpsIntervalMs; plog('b', (int)(gpsIntervalMs / 1000), gpsAd.still);
 }
 static void gpsWake() {
+  Serial1.begin(GPS_BAUD, SERIAL_8N1, PIN_GPS_RX, PIN_GPS_TX);
   for (int i = 0; i < 4; i++) Serial1.write((uint8_t)0xFF);
   gpsSleeping = false; gpsOnAt = millis(); gpsEpochAtOn = gps.fix.epoch; plog('g');
 }
@@ -804,7 +820,15 @@ static void gpsDuty() {                                     // called every pass
 // What the screen being off switches off. The SD card's chip-select is floated too: driven high into an unpowered card it leaked about 14 mA.
 // The panel's sleep command saves about 13 mA.
 static uint32_t panelRetryUntil = 0, panelRetryAt = 0;      // after a wake, the panel's sleep-out is repeated for a few seconds (see below)
+// Receive mode: continuous, or (screen off, setting on, and the channel's preamble long enough) in short bursts. Restarts reception either way.
+static void rxApply() {
+  if (!radioOk) return;
+  RxDutyPlan p = rxDutyPlan(LORA_SF, LORA_BW_KHZ, RXD_SENDER_PREAMBLE, RXD_MIN_SYMBOLS, 5000);
+  if (S.rxDuty && screenState == 2 && !setupMode && p.usable) radio->startReceiveDutyCycle(p.wakeUs, p.sleepUs); else radio->startReceive();
+}
 static void powerApply() {
+  static bool rxWasDuty = false; bool rxWantDuty = S.rxDuty && screenState == 2 && !setupMode;
+  if (rxWantDuty != rxWasDuty) { rxWasDuty = rxWantDuty; rxApply(); }                       // the screen went off or on: switch the receive mode
   bool off = screenState == 2 && !setupMode;
   bool wSd = off && pwrSd, wPanel = off && pwrPanel, wGps = off && pwrGps && S.gpsSleep && !demoMode;
   if (wSd != aSd || wPanel != aPanel || wGps != aGps) plog(off ? 'O' : 'o', wSd | (wPanel << 1) | (wGps << 2));
@@ -845,8 +869,8 @@ static void screenTick() {
   if (!S.dimSec && !S.offSec) { if (screenState) { screenState = 0; tft.setBrightness(S.brightness); } return; }
   uint32_t idle = (millis() - lastActivity) / 1000;
   int want = (S.offSec && idle >= (uint32_t)S.offSec) ? 2 : ((S.dimSec && idle >= (uint32_t)S.dimSec) ? 1 : 0);
-  if (want == 2 && screenState != 2) { asleepSum = 0; asleepN = 0; }
-  if (want == 2) { static uint32_t sampledAt = 0; if (millis() - sampledAt > 2000) { sampledAt = millis(); uint8_t b[2]; if (i2cRead(ADDR_BQ27220, 0x0C, b, 2) == 0) { if (sampledAt - lastActivity > 6000) { asleepSum += (int16_t)(b[0] | (b[1] << 8)); asleepN++; } } } }
+  if (want == 2 && screenState != 2) { asleepSum = 0; asleepN = 0; asleepMin = 0; asleepMax = -32768; asleepUsbSkipped = 0; }
+  if (want == 2) { static uint32_t sampledAt = 0; if (millis() - sampledAt > 2000) { sampledAt = millis(); uint8_t b[2]; if (i2cRead(ADDR_BQ27220, 0x0C, b, 2) == 0) { if (sampledAt - lastActivity > 6000) { if (usbPresent()) asleepUsbSkipped++; else { int ma = (int16_t)(b[0] | (b[1] << 8)); asleepSum += ma; asleepN++; if (ma < asleepMin) asleepMin = ma; if (ma > asleepMax) asleepMax = ma; } } } } }
   if (want != screenState) { screenState = want; powerApply(); tft.setBrightness(want == 2 ? 0 : (want == 1 ? std::min(S.brightness, 20) : S.brightness)); }
 }
 static uint8_t keyFiltered() { uint8_t e = keys.poll(); if (e) plog('k', e); if (e && screenTouch()) return 0; return e; }
@@ -967,7 +991,7 @@ static int txFrame(const unsigned char *f, size_t len) {
     int c = radio->scanChannel();
     if (c == RADIOLIB_CHANNEL_FREE) free = true; else delay(300 + (esp_random() % 1200));
   }
-  if (!free) { radio->startReceive(); return 1; }
+  if (!free) { rxApply(); return 1; }
   // On battery the knob lines pick up transmitter noise and their pin-change interrupts can fire thousands of times a second, which trips the
   // interrupt watchdog (seen on this pager by the Meshtastic project). So the knob interrupts are off while we transmit.
   detachInterrupt(PIN_ROT_A); detachInterrupt(PIN_ROT_B);
@@ -975,7 +999,7 @@ static int txFrame(const unsigned char *f, size_t len) {
   kLast = (digitalRead(PIN_ROT_A) << 1) | digitalRead(PIN_ROT_B); kAcc = 0; knobSteps = 0;
   attachInterrupt(PIN_ROT_A, knobIsr, CHANGE); attachInterrupt(PIN_ROT_B, knobIsr, CHANGE);
   rxFlag = false;                                   // the TX-done interrupt shares the receive pin
-  radio->startReceive();
+  rxApply();
   M.noteTx(millis());
   return st == RADIOLIB_ERR_NONE ? 0 : 2;
 }
@@ -1032,7 +1056,7 @@ static void powerOff() {
   if (v >= 0) bqWrite(0x09, (uint8_t)(v | 0x20));      // battery path off: the pager loses power here
   delay(1500);
   if (v >= 0) bqWrite(0x09, (uint8_t)(v & ~0x20));     // still running: it did not work; put the battery path back
-  if (radioOk) radio->startReceive();
+  if (radioOk) rxApply();
   say("Power off did not work"); haptic.play(H_ERROR); dirty = true;
 }
 static void openMainMenu() {
@@ -1149,7 +1173,8 @@ void loop() {
         else if (cmd[0] == 'P') {
           if (cmd[1] == 'S') { pwrSd = cmd[2] == '1'; }
           else if (cmd[1] == 'D') { pwrPanel = cmd[2] == '1'; }
-          else if (cmd[1] == 'G') { pwrGps = cmd[2] == '1'; }
+          else if (cmd[1] == 'G') { pwrGps = cmd[2] == '1'; powerApply(); }
+          else if (cmd[1] == 'A') Serial.printf("screen-off current: %d samples, average %d mA, min %d, max %d (most negative = most drawn), %d samples skipped because USB was in\n", asleepN, asleepN ? (int)(asleepSum / asleepN) : 0, asleepMin, asleepMax, asleepUsbSkipped);
           else if (cmd[1] == 'N') {                                               // count what the GPS sends for 12 s, in 1 s steps
             uint32_t t0 = millis(); int sec[12] = {0};
             while (millis() - t0 < 12000) { while (Serial1.available()) { Serial1.read(); int k = (millis() - t0) / 1000; if (k < 12) sec[k]++; } delay(5); }
@@ -1225,7 +1250,7 @@ void loop() {
         else if (ev == msg::EV_REJECTED) { haptic.play(H_ERROR); ui.dirty = true; }
       }
     }
-    radio->startReceive();
+    rxApply();
   }
 
   if (setupMode) { setupTick(); return; }   // while the phone setup screen is open, nothing else runs (receiving still does)

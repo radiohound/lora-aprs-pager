@@ -29,6 +29,7 @@ struct PagerSettings {
   int gpsMoveSec = 60;             // GPS wake interval while the pager is moving, seconds
   int gpsStillMin = 5;             // GPS wake interval once the pager has stayed put, minutes (without the motion sensor)
   bool gpsMotion = false;          // the motion sensor (Bosch BHI260AP) wakes the GPS when the pager moves; off until the sensor wake is proven on the pager
+  bool rxDuty = false;             // while the screen is off the radio sleeps and wakes in short bursts to catch a packet's preamble (only at SF11/SF12; off until tested against real traffic)
   int gpsBackstopMin = 60;         // with the motion sensor: how often the GPS wakes anyway while nothing moves (keeps its satellite data fresh), minutes
 };
 
@@ -84,13 +85,13 @@ inline bool settingsValidSymbol(char table, char code) {
 // field is missing the whole load fails and the pager silently falls back to factory settings (the call sign would be lost).
 inline bool settingsLaterDefault(const char *k, std::string &v) {
   struct D { const char *k, *v; };
-  static const D defs[] = {{"tz", "-8"}, {"dst", "1"}, {"baticon", "1"}, {"dim", "60"}, {"off", "300"}, {"gpssl", "1"}, {"gpsmv", "60"}, {"gpsst", "5"}, {"gpsmo", "0"}, {"gpsbk", "60"}};
+  static const D defs[] = {{"tz", "-8"}, {"dst", "1"}, {"baticon", "1"}, {"dim", "60"}, {"off", "300"}, {"gpssl", "1"}, {"gpsmv", "60"}, {"gpsst", "5"}, {"gpsmo", "0"}, {"gpsbk", "60"}, {"rxd", "0"}};
   for (const D &d : defs) if (!strcmp(k, d.k)) { v = d.v; return true; }
   return false;
 }
 
 // Read all fields through get(name, value). Returns true and fills `out` only if EVERY field is valid; otherwise `err` says
-// which one is wrong and `out` is left untouched. Fields: call path table sym comment txdbm moving stationary movem auto haptic bright tz dst baticon dim off gpssl gpsmv gpsst gpsmo gpsbk
+// which one is wrong and `out` is left untouched. Fields: call path table sym comment txdbm moving stationary movem auto haptic bright tz dst baticon dim off gpssl gpsmv gpsst gpsmo gpsbk rxd
 using SettingsGet = std::function<bool(const char *, std::string &)>;
 inline bool settingsParse(const SettingsGet &get, PagerSettings &out, std::string &err) {
   using namespace settings_detail;
@@ -138,6 +139,8 @@ inline bool settingsParse(const SettingsGet &get, PagerSettings &out, std::strin
   if (!num("gpsmo", 0, 1, b, "GPS wake on motion: 0 or 1")) return false;
   n.gpsMotion = b;
   if (!num("gpsbk", 10, 240, n.gpsBackstopMin, "GPS backstop wake: 10 to 240 minutes")) return false;
+  if (!num("rxd", 0, 1, b, "Receive in bursts: 0 or 1")) return false;
+  n.rxDuty = b;
   out = n; return true;
 }
 
@@ -151,8 +154,8 @@ inline std::string settingsToJson(const PagerSettings &s) {
   std::string cm = settingsJsonEscape(s.comment), pa = settingsJsonEscape(s.path);
   char t[3] = {s.table, 0, 0}; std::string tb = settingsJsonEscape(t); char y[2] = {s.sym, 0}; std::string sy = settingsJsonEscape(y);
   snprintf(b, sizeof b, "{\"call\":\"%s\",\"path\":\"%s\",\"table\":\"%s\",\"sym\":\"%s\",\"comment\":\"%s\",\"txdbm\":%d,\"moving\":%d,"
-           "\"stationary\":%d,\"movem\":%d,\"auto\":%d,\"haptic\":%d,\"bright\":%d,\"tz\":%d,\"dst\":%d,\"baticon\":%d,\"dim\":%d,\"off\":%d,\"gpssl\":%d,\"gpsmv\":%d,\"gpsst\":%d,\"gpsmo\":%d,\"gpsbk\":%d}",
+           "\"stationary\":%d,\"movem\":%d,\"auto\":%d,\"haptic\":%d,\"bright\":%d,\"tz\":%d,\"dst\":%d,\"baticon\":%d,\"dim\":%d,\"off\":%d,\"gpssl\":%d,\"gpsmv\":%d,\"gpsst\":%d,\"gpsmo\":%d,\"gpsbk\":%d,\"rxd\":%d}",
            s.call, pa.c_str(), tb.c_str(), sy.c_str(), cm.c_str(), s.txDbm, s.movingSec, s.stationaryMin, s.moveMetres,
-           s.autoAtBoot ? 1 : 0, s.haptic ? 1 : 0, s.brightness, s.utcOffset, s.usDst ? 1 : 0, s.batIcon ? 1 : 0, s.dimSec, s.offSec, s.gpsSleep ? 1 : 0, s.gpsMoveSec, s.gpsStillMin, s.gpsMotion ? 1 : 0, s.gpsBackstopMin);
+           s.autoAtBoot ? 1 : 0, s.haptic ? 1 : 0, s.brightness, s.utcOffset, s.usDst ? 1 : 0, s.batIcon ? 1 : 0, s.dimSec, s.offSec, s.gpsSleep ? 1 : 0, s.gpsMoveSec, s.gpsStillMin, s.gpsMotion ? 1 : 0, s.gpsBackstopMin, s.rxDuty ? 1 : 0);
   return b;
 }

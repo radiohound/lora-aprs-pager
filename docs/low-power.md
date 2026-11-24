@@ -168,6 +168,24 @@ Measured, no change beyond noise:
 * Beacons use the most recent fix, so a beacon sent while the screen is off can be a little old, and a move that starts while it is in the
   long interval is noticed at the next wake (up to `gpsst` minutes).
 
+## Radio: listening in short bursts (setting, off by default)
+
+The SX1262 can sleep between short listening windows and wake when it hears the start of a packet (the preamble). LoRa APRS stations send an
+8-symbol preamble, so the radio has to decide after seeing only 3 of those 8 symbols. RadioLib's default of 8 minimum symbols leaves no time
+to sleep at all, which is why `startReceiveDutyCycleAuto()` with its defaults does nothing here. The timing is in `src/rxduty.h`
+(host-tested), mirroring RadioLib's formula:
+
+| Spreading factor (125 kHz) | Symbol | Sleeps | Awake | Asleep after the wake-up overhead | Used? |
+|---|---|---|---|---|---|
+| SF12 | 32.8 ms | 65.5 ms | 131 ms | about 30% | yes |
+| SF11 | 16.4 ms | 32.8 ms | 65.5 ms | about 27% | yes |
+| SF10 | 8.2 ms | 16.4 ms | 32.8 ms | about 21% | no, too little |
+| SF9 and lower | 4.1 ms or less | 8.2 ms or less | | under 10% | no: the radio's start-up (TCXO 5 ms + 1 ms) eats it |
+
+So it does something at SF11 and SF12 only; the firmware is fixed at SF12. Expected saving about 2 mA (30% of the 6 mA receive current).
+**Not tested on air yet.** The risk is missing packets whose preamble is short or weak. Test it beside a second receiver for an hour and compare
+packet counts before relying on it. Only with the screen off; with the screen on the radio listens continuously.
+
 ## Light sleep: things that bit us
 
 * **`gpio_wakeup_enable()` changes a pin's interrupt type to level-triggered.** If the pin is still at its wake level when the

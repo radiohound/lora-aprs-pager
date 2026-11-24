@@ -174,7 +174,7 @@ Any set of 256 px tiles in the standard `<z>/<x>/<y>` layout works: the tile pac
 
 The parsers and engines are plain C++ and are tested on a PC:
 
-    for t in aprs geo settings messaging emoticons textedit clock ubx gpsduty; do
+    for t in aprs geo settings messaging emoticons textedit clock ubx gpsduty rxduty; do
       c++ -std=c++17 -I src test/host/test_$t.cpp -o /tmp/test_$t && /tmp/test_$t; done
 
 They cover the APRS frame parser and beacon builder, GPS sentences, the u-blox messages sent to the GPS, distance and bearing, the settings validation, the messaging engine
@@ -185,7 +185,7 @@ They cover the APRS frame parser and beacon builder, GPS sentences, the u-blox m
 | | |
 |---|---|
 | `src/app/app.cpp` | the application: map, stations, beacon, setup hotspot, glue |
-| `src/aprs.h`, `src/nmea.h`, `src/geo.h`, `src/ubx.h`, `src/gpsduty.h` | APRS frames, GPS sentences, distance / bearing, u-blox GPS messages, the GPS sleep interval (plain C++) |
+| `src/aprs.h`, `src/nmea.h`, `src/geo.h`, `src/ubx.h`, `src/gpsduty.h`, `src/rxduty.h` | APRS frames, GPS sentences, distance / bearing, u-blox GPS messages, the GPS sleep interval, the receive burst timing (plain C++) |
 | `src/messaging.h`, `src/msg_ui.h`, `src/emoticons.h` | messaging engine, its screens, emoticon matching |
 | `src/settings_core.h`, `src/webui.h` | settings and their validation, the phone setup page |
 | `src/beacon.h`, `src/haptic.h`, `src/inputs.h`, `src/keymap.h` | beacon timing, haptics, knob and keyboard |
