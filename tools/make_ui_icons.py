@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """Draw the map screen's status icons and write them to src/ui_icons.h. Needs Pillow. Run from the repository root.
 
-Each icon is a list of text rows, one character per pixel: '.' see-through, K black (the thin outline), W white, G green, A grey, Y yellow, R red.
+Each icon is a list of text rows, one character per pixel: '.' see-through, K black (the thin outline), W white, G green, A grey, Y yellow, R red, P purple.
 """
 from PIL import Image, ImageDraw, ImageFilter
 
 BK, WH, GR, GY, YE = (0, 0, 0), (255, 255, 255), (0, 220, 0), (130, 130, 130), (255, 230, 0)
 RD = (255, 40, 40)
-CHARS = {WH: 'W', GR: 'G', GY: 'A', YE: 'Y', RD: 'R'}
+PU = (200, 60, 255)
+CHARS = {WH: 'W', GR: 'G', GY: 'A', YE: 'Y', RD: 'R', PU: 'P'}
 
 def tile(w, h=22):
     im = Image.new('RGB', (w, h), BK); return im, ImageDraw.Draw(im)
@@ -82,7 +83,7 @@ def rows(im):
     return out
 
 ICONS = [('PAN_X', pan_x()), ('PAN_Y', pan_y()), ('ZOOM', zoom()), ('STATIONS', stations()),
-         ('GPS_FIX', gps(GR)), ('GPS_NONE', gps(GY)), ('TX_AUTO', tx(GR)), ('TX_OFF', tx(GY)), ('TX_NOW', tx(RD)), ('MAIL', envelope()), ('LOCK', lock())]
+         ('GPS_FIX', gps(GR)), ('GPS_NONE', gps(GY)), ('TX_AUTO', tx(GR)), ('TX_OFF', tx(GY)), ('TX_NOW', tx(RD)), ('RX_NOW', tx(PU)), ('MAIL', envelope()), ('LOCK', lock())]
 text = '// Made by tools/make_ui_icons.py: do not edit by hand.\n#pragma once\n\nstruct UiIcon { int w, h; const char *const *rows; };\n'
 for name, im in ICONS:
     r = rows(im)

@@ -231,6 +231,31 @@ static const char *const UI_TX_NOW_ROWS[] = {
 };
 static const UiIcon UI_TX_NOW = {21, 21, UI_TX_NOW_ROWS};
 
+static const char *const UI_RX_NOW_ROWS[] = {
+  "..KKK...........KKK..",
+  "..KPKK.........KKPK..",
+  ".KKPPK.........KPPKK.",
+  ".KPPKKKK....KKKKKPPK.",
+  "KKPPKKPKKKKKKPPKKPPKK",
+  "KPPKKPPPKPPPKPPPKKPPK",
+  "KPPKKPPKPPPPPKPPKKPPK",
+  "KPPKKPPKPPPPPKPPKKPPK",
+  "KPPKKPPKPPPPPKPPKKPPK",
+  "KPPKKPPPKPPPKPPPKKPPK",
+  "KKPPKKPKKKPPKPPKKPPKK",
+  ".KPPKKKK.KPPKKKKKPPK.",
+  ".KKPPK...KPPK..KPPKK.",
+  "..KPKK...KPPK..KKPK..",
+  "..KKK....KPPK...KKK..",
+  ".........KPPK........",
+  ".........KPPK........",
+  ".........KPPK........",
+  ".........KPPK........",
+  ".........KPPK........",
+  ".........KKKK........",
+};
+static const UiIcon UI_RX_NOW = {21, 21, UI_RX_NOW_ROWS};
+
 static const char *const UI_MAIL_ROWS[] = {
   ".KKKKKKKKKKKKKKKKKKKK.",
   "KKWWWWWWWWWWWWWWWWWWKK",

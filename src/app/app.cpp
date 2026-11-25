@@ -39,6 +39,7 @@ static void rxApply();
 #include <soc/gpio_sig_map.h>
 #include "chase.h"
 #include "txbackoff.h"
+#include "repeater.h"
 #include "gpsduty.h"
 #include <esp_task_wdt.h>
 #include <esp_system.h>
@@ -93,7 +94,7 @@ static unsigned long txCount = 0;
 // ---- Stations heard (positions only for now) ----
 struct Station { char call[10]; double lat, lon; char table, sym; uint32_t heard, first, heardUtc, firstUtc; float rssi, snr; bool used;      // heard/first: millis(); heardUtc/firstUtc: real time (0 = clock not set)
 
-                 uint16_t count; char raw[121], path[40], via[10], comment[44]; };   // raw = the last packet as text; via = the digipeater that repeated it ("" = heard directly)
+                 uint16_t count; char raw[121], path[40], via[10], comment[44]; bool noPos; };   // noPos: heard (it repeated our packet) but we do not know where it is   // raw = the last packet as text; via = the digipeater that repeated it ("" = heard directly)
 static Station stations[48];
 static uint32_t utcNow();
 // Wakes the receiver from backup: a low level on its receive line. A 0x00 byte holds the line low for 9 bit times, 0xFF for only 1. With 0xFF
@@ -124,7 +125,7 @@ static void stationUpdate(const AprsPos &p, float rssi, float snr, const char *r
   slot->heardUtc = u;
   if (slot->count < 65535) slot->count++;
   strncpy(slot->call, p.call, 9); slot->call[9] = 0;
-  slot->lat = p.lat; slot->lon = p.lon; slot->table = p.table; slot->sym = p.sym;
+  slot->lat = p.lat; slot->lon = p.lon; slot->table = p.table; slot->sym = p.sym; slot->noPos = false;
   slot->heard = millis(); slot->rssi = rssi; slot->snr = snr; slot->used = true;
   strncpy(slot->comment, p.comment, sizeof slot->comment - 1); slot->comment[sizeof slot->comment - 1] = 0;
   size_t k = std::min(rawLen, sizeof slot->raw - 1);
@@ -132,6 +133,29 @@ static void stationUpdate(const AprsPos &p, float rssi, float snr, const char *r
   slot->raw[k] = 0;
   aprsPathInfo(rawText, rawLen, slot->path, sizeof slot->path, slot->via, sizeof slot->via);
   strncpy(lastHeardCall, p.call, 9); lastHeardCall[9] = 0; lastHeardAt = millis();
+}
+// A station repeated one of our packets and we heard it: it goes on the list (or its entry is refreshed). The signal figures are its own.
+// What we already know from its own packets stays; a new entry has no position until it sends one.
+static void stationRepeatedUs(const char *call, float rssi, float snr, const char *rawText, size_t rawLen) {
+  Station *slot = nullptr, *oldest = nullptr; bool same = false;
+  for (auto &s : stations) {
+    if (s.used && strcmp(s.call, call) == 0) { slot = &s; same = true; break; }
+    if (!s.used && !slot) slot = &s;
+    if (s.used && (!oldest || s.heard < oldest->heard)) oldest = &s;
+  }
+  if (!slot) slot = oldest;
+  uint32_t u = utcNow();
+  if (!same) {
+    memset(slot, 0, sizeof *slot);
+    strncpy(slot->call, call, 9); slot->table = '/'; slot->sym = '#'; slot->noPos = true; slot->first = millis(); slot->firstUtc = u; slot->used = true;
+    strncpy(slot->comment, "Repeated our packet", sizeof slot->comment - 1);
+    size_t k = std::min(rawLen, sizeof slot->raw - 1);
+    for (size_t i = 0; i < k; i++) slot->raw[i] = (rawText[i] >= 32 && rawText[i] < 127) ? rawText[i] : '.';
+    slot->raw[k] = 0;
+    aprsPathInfo(rawText, rawLen, slot->path, sizeof slot->path, slot->via, sizeof slot->via); slot->via[0] = 0;   // what we heard was its own transmission
+  }
+  slot->heard = millis(); slot->heardUtc = u; slot->rssi = rssi; slot->snr = snr; if (slot->count < 65535) slot->count++;
+  strncpy(lastHeardCall, call, 9); lastHeardCall[9] = 0; lastHeardAt = millis();
 }
 
 // ---- GPS ----
@@ -233,6 +257,8 @@ static void drawBatIcon(lgfx::LovyanGFX &D, int W) {
 static const int ICON_COL_W = 40, ICON_COL_BOTTOM = 150;     // station labels keep out of this corner
 static const uint32_t KNOB_ICON_MS = 5000;                   // the knob-mode icon shows this long after a press changes the mode
 static uint32_t knobIconUntil = 0;                           // 0 = hidden
+static const uint32_t RX_ICON_MS = 2000;                     // the antenna is purple this long after a packet was read
+static uint32_t rxIconUntil = 0;                             // 0 = no recent packet
 static void drawUiIcon(lgfx::LovyanGFX &D, const UiIcon &ic, int cx, int cy) {       // centred on cx, cy
   int x0 = cx - ic.w / 2, y0 = cy - ic.h / 2;
   for (int y = 0; y < ic.h; y++) for (int x = 0; x < ic.w; x++) {
@@ -244,6 +270,7 @@ static void drawUiIcon(lgfx::LovyanGFX &D, const UiIcon &ic, int cx, int cy) {  
       case 'A': c = D.color565(130, 130, 130); break;
       case 'Y': c = D.color565(255, 230, 0); break;
       case 'R': c = D.color565(255, 40, 40); break;
+      case 'P': c = D.color565(200, 60, 255); break;
       default: continue;
     }
     D.drawPixel(x0 + x, y0 + y, c);
@@ -427,13 +454,13 @@ static void buildOrder() {
   nOrd = 0;
   for (int i = 0; i < 48; i++) {
     if (!stations[i].used) continue;
-    sdist[i] = gps.fix.valid ? geoDistKm(gps.fix.lat, gps.fix.lon, stations[i].lat, stations[i].lon) : -1.0;
+    sdist[i] = (gps.fix.valid && !stations[i].noPos) ? geoDistKm(gps.fix.lat, gps.fix.lon, stations[i].lat, stations[i].lon) : -1.0;
     order[nOrd++] = i;
   }
   bool byDist = sortByDistance && gps.fix.valid;
   for (int i = 1; i < nOrd; i++) {                      // insertion sort, at most 48 entries
     int v = order[i], j = i - 1;
-    while (j >= 0 && (byDist ? sdist[order[j]] > sdist[v] : stations[order[j]].heard < stations[v].heard)) { order[j + 1] = order[j]; j--; }
+    while (j >= 0 && (byDist ? (sdist[order[j]] < 0 ? 1e12 : sdist[order[j]]) > (sdist[v] < 0 ? 1e12 : sdist[v]) : stations[order[j]].heard < stations[v].heard)) { order[j + 1] = order[j]; j--; }
     order[j + 1] = v;
   }
 }
@@ -467,12 +494,12 @@ static void drawListPanel(lgfx::LovyanGFX &D, int H) {
     D.setCursor(2, dy + 2); D.setTextColor(TFT_YELLOW, TFT_BLACK); D.printf("%-15.15s", st.call); drawSymbol(D, LIST_W - 17, dy + 10, st.table, st.sym);
     D.setTextColor(TFT_WHITE, TFT_BLACK);
     D.setCursor(2, dy + 14);
-    if (gps.fix.valid) { double b = geoBearing(gps.fix.lat, gps.fix.lon, st.lat, st.lon); char ds[10]; geoFmtDist(ds, sizeof ds, sdist[order[sel]]);
+    if (gps.fix.valid && !st.noPos) { double b = geoBearing(gps.fix.lat, gps.fix.lon, st.lat, st.lon); char ds[10]; geoFmtDist(ds, sizeof ds, sdist[order[sel]]);
                          D.printf("%3.0f %-2s  %-9s", b, geoCompass(b), ds); }
-    else D.printf("no GPS: no distance ");
+    else D.printf(st.noPos ? "position not known  " : "no GPS: no distance ");
     char as[8]; geoFmtAge(as, sizeof as, (millis() - st.heard) / 1000);
     D.setCursor(2, dy + 26); D.printf("rssi %.0f snr %+.1f", st.rssi, st.snr);
-    D.setCursor(2, dy + 38); D.printf("%.4f %.4f", st.lat, st.lon);
+    D.setCursor(2, dy + 38); if (st.noPos) D.print("repeated our packet"); else D.printf("%.4f %.4f", st.lat, st.lon);
   }
 }
 
@@ -501,7 +528,7 @@ static void drawFullList(lgfx::LovyanGFX &D, int W, int H) {
     char as[8]; geoFmtAge(as, sizeof as, age); if (fresh) strcpy(as, "NEW"); D.setTextSize(1); D.setTextColor(fresh ? TFT_GREEN : C_GRAY); D.setCursor(LW - 6 * (int)strlen(as) - 4, y + 4); D.print(as);
     if (isSel) D.drawRect(0, y, LW, rowH, TFT_YELLOW);                                                // the selected row keeps a yellow frame even when lit green
     char info[40] = "";
-    if (gps.fix.valid) { char ds[10]; geoFmtDist(ds, sizeof ds, sdist[order[first + r]]); double b = geoBearing(gps.fix.lat, gps.fix.lon, st.lat, st.lon); snprintf(info, sizeof info, "%s %s  ", ds, geoCompass(b)); }
+    if (gps.fix.valid && !st.noPos) { char ds[10]; geoFmtDist(ds, sizeof ds, sdist[order[first + r]]); double b = geoBearing(gps.fix.lat, gps.fix.lon, st.lat, st.lon); snprintf(info, sizeof info, "%s %s  ", ds, geoCompass(b)); }
     D.setTextColor(st.via[0] ? TFT_YELLOW : TFT_GREEN); D.setCursor(30, y + 17);
     D.print(info); D.print(st.via[0] ? "digipeated" : "direct");
   }
@@ -520,8 +547,8 @@ static void drawFullList(lgfx::LovyanGFX &D, int W, int H) {
     if (st.via[0]) { D.setTextColor(TFT_YELLOW); D.printf("Digipeated by %s", st.via); } else { D.setTextColor(TFT_GREEN); D.print("Heard directly from the sender"); }
     y += 11; D.setTextColor(TFT_WHITE); D.setCursor(X, y); D.printf("Path: %s", st.path[0] ? st.path : "(none)"); y += 11;
     D.setCursor(X, y); D.printf("RSSI %.0f dBm    SNR %+.1f dB", st.rssi, st.snr); y += 11;
-    D.setCursor(X, y); D.printf("Position %.4f %.4f", st.lat, st.lon); y += 11;
-    if (gps.fix.valid) { double b = geoBearing(gps.fix.lat, gps.fix.lon, st.lat, st.lon); char ds[10]; geoFmtDist(ds, sizeof ds, sdist[order[sel]]);
+    D.setCursor(X, y); if (st.noPos) D.print("Position not known yet"); else D.printf("Position %.4f %.4f", st.lat, st.lon); y += 11;
+    if (gps.fix.valid && !st.noPos) { double b = geoBearing(gps.fix.lat, gps.fix.lon, st.lat, st.lon); char ds[10]; geoFmtDist(ds, sizeof ds, sdist[order[sel]]);
                          D.setCursor(X, y); D.printf("%s from you, %.0f deg %s", ds, b, geoCompass(b)); y += 11; }
     D.setCursor(X, y); D.printf("Symbol  table %c  code %c", st.table, st.sym); y += 11;
     if (st.comment[0]) { std::vector<std::string> w; wrapInto(w, std::string("Comment: ") + st.comment, 46); for (size_t i = 0; i < w.size() && i < 2; i++) { D.setCursor(X, y); D.print(w[i].c_str()); y += 11; } }
@@ -630,7 +657,7 @@ static void render() {
     struct Mk { const Station *st; int x, y, ix, iy; };
     Mk mk[48]; int nm = 0;
     for (auto &st : stations) {
-      if (!st.used) continue;
+      if (!st.used || st.noPos) continue;
       double sx, sy; toPx(st.lat, st.lon, z, sx, sy);
       int x = (int)(sx - ox), y = (int)(sy - oy);
       if (x < x0 - 60 || x > W + 60 || y < -10 || y > H + 10) continue;
@@ -709,7 +736,7 @@ static void render() {
   {
     int ix = W - ICON_COL_W / 2;
     drawUiIcon(D, gps.fix.valid ? UI_GPS_FIX : UI_GPS_NONE, ix, 33);
-    drawUiIcon(D, (autoBeacon && !demoMode) ? UI_TX_AUTO : UI_TX_OFF, ix, 65);
+    drawUiIcon(D, rxIconUntil ? UI_RX_NOW : (autoBeacon && !demoMode) ? UI_TX_AUTO : UI_TX_OFF, ix, 65);
     if (knobIconUntil)                                                      // what the knob does now
       drawUiIcon(D, mode == M_ZOOM ? UI_ZOOM : mode == M_PANX ? UI_PAN_X : mode == M_PANY ? UI_PAN_Y : UI_STATIONS, ix, 97);
     if (M.unreadTotal() && !demoMode) {                                     // unread messages: envelope and count
@@ -1060,7 +1087,7 @@ static void toPx(double lat, double lon, int z, double &x, double &y);
 // Chase mode, every pass: remember where the followed station is, move the map when it has moved a pixel or more, warn when the battery is low.
 static void chaseTick() {
   if (!chase.on) return;
-  if (!chase.followingMe()) for (auto &s : stations) if (s.used && strcmp(s.call, chase.call) == 0) { chase.have = true; chase.lat = s.lat; chase.lon = s.lon; chase.heard = s.heard; break; }
+  if (!chase.followingMe()) for (auto &s : stations) if (s.used && !s.noPos && strcmp(s.call, chase.call) == 0) { chase.have = true; chase.lat = s.lat; chase.lon = s.lon; chase.heard = s.heard; break; }
   if (int w = chaseBatteryWarning(chase, batPct, batCharging)) { say(w == 10 ? "Battery 10 %: chase mode is using it fast" : "Battery 20 %: chase mode is using it fast"); haptic.play(H_ERROR); }
   bool wasPaused = chase.paused;
   if (!chaseFollowing(chase, millis())) return;
@@ -1338,7 +1365,7 @@ static void mainMenuAct(MenuAct a) {
     case MA_CHASE_ME: chaseStart(chase, nullptr); say(gps.fix.valid ? "Chase mode: following me" : "Chase mode: waiting for a GPS fix"); break;
     case MA_CHASE_STATION:
       chaseStart(chase, selCall);
-      for (auto &s : stations) if (s.used && strcmp(s.call, chase.call) == 0) { chase.have = true; chase.lat = s.lat; chase.lon = s.lon; chase.heard = s.heard; }
+      for (auto &s : stations) if (s.used && !s.noPos && strcmp(s.call, chase.call) == 0) { chase.have = true; chase.lat = s.lat; chase.lon = s.lon; chase.heard = s.heard; }
       say("Chase mode on"); break;
     case MA_CHASE_OFF: chaseStop(chase); screenTouch(); say("Chase mode off"); break;
     case MA_POWEROFF_ASK:
@@ -1573,9 +1600,23 @@ void loop() {
     rxFlag = false;
     String f; int st = radio->readData(f);
     if (st == RADIOLIB_ERR_NONE) {
+      rxIconUntil = millis() + RX_ICON_MS; if (!rxIconUntil) rxIconUntil = 1; dirty = true;     // any packet read, our own digipeated beacon too
       rxCount++;
       { char shown[200]; size_t n = std::min<size_t>(f.length(), sizeof shown - 1); for (size_t i = 0; i < n; i++) shown[i] = (f[i] >= 32 && f[i] < 127) ? f[i] : '.'; shown[n] = 0;
         Serial.printf("rx rssi=%.0f snr=%.1f (%u bytes): %s\n", radio->getRSSI(), radio->getSNR(), (unsigned)f.length(), shown); }
+      {   // one of our own packets coming back through a digipeater: list the station that sent us this copy, and say so
+        const char *t = f.c_str(); size_t tn = f.length(); if (tn > 3 && (uint8_t)t[0] == 0x3C) { t += 3; tn -= 3; }
+        size_t cl = strlen(S.call);
+        if (tn > cl && strncasecmp(t, S.call, cl) == 0 && t[cl] == '>') {
+          char path[40], via[10], rep[10]; aprsPathInfo(t, tn, path, sizeof path, via, sizeof via);
+          if (aprsRepeater(path, rep, sizeof rep) && strcasecmp(rep, S.call) != 0) {
+            stationRepeatedUs(rep, radio->getRSSI(), radio->getSNR(), t, tn);
+            if (stView == 3 && (lastKnobAt == 0 || millis() - lastKnobAt > FOLLOW_PAUSE_MS)) { strncpy(selCall, rep, 9); selCall[9] = 0; }
+            if (!ui.active()) { static char note[64]; snprintf(note, sizeof note, "Repeated by %s  %.0f dBm  SNR %+.0f", rep, radio->getRSSI(), radio->getSNR()); say(note); }
+            dirty = true;
+          }
+        }
+      }
       AprsPos pos;
       if (aprsParse((const unsigned char *)f.c_str(), f.length(), pos)) {
         if (strcasecmp(pos.call, S.call) != 0) { stationUpdate(pos, radio->getRSSI(), radio->getSNR(), f.c_str() + ((uint8_t)f[0] == 0x3C ? 3 : 0), f.length() - ((uint8_t)f[0] == 0x3C ? 3 : 0));
@@ -1659,7 +1700,7 @@ void loop() {
       if (nOrd) {
         int i = constrain(selIndex() + (d > 0 ? -1 : 1), 0, nOrd - 1);
         const Station &st = stations[order[i]];
-        strncpy(selCall, st.call, 9); selCall[9] = 0; clat = st.lat; clon = st.lon;
+        strncpy(selCall, st.call, 9); selCall[9] = 0; if (!st.noPos) { clat = st.lat; clon = st.lon; }
       }
     } else if (mode == M_ZOOM) {
       int n = constrain(zi + (d > 0 ? 1 : -1), 0, NZ - 1);
@@ -1668,7 +1709,7 @@ void loop() {
       if (nOrd) {                                    // up on the knob = up the list; the map follows the selection
         int i = constrain(selIndex() + (d > 0 ? -1 : 1), 0, nOrd - 1);
         const Station &st = stations[order[i]];
-        strncpy(selCall, st.call, 9); selCall[9] = 0; clat = st.lat; clon = st.lon;
+        strncpy(selCall, st.call, 9); selCall[9] = 0; if (!st.noPos) { clat = st.lat; clon = st.lon; }
       }
     } else {
       int z = ZOOMS[zi]; double cx, cy; toPx(clat, clon, z, cx, cy);
@@ -1714,6 +1755,7 @@ void loop() {
 
   // keep the "age" column current: refresh every 15 s while the list is showing
   if (knobIconUntil && (int32_t)(millis() - knobIconUntil) >= 0) { knobIconUntil = 0; dirty = true; }     // take the knob icon away again
+  if (rxIconUntil && (int32_t)(millis() - rxIconUntil) >= 0) { rxIconUntil = 0; dirty = true; }     // antenna back to green or grey
   static uint32_t chaseDrawn = 0;
   if (chase.on && millis() - chaseDrawn > 1000) { chaseDrawn = millis(); dirty = true; }
   static uint32_t lastAge = 0;
