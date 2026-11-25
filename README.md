@@ -4,7 +4,10 @@ A LoRa APRS tracker, station map and messenger for the **LilyGO T-LoRa Pager (43
 It listens on 433.775 MHz, draws the stations it hears on a map from your own SD card, beacons your position, and sends and receives
 APRS messages with acknowledgements, all on the pager's own screen, rotary knob and keyboard. Setup is done from a phone.
 
-> **Status: alpha.** Working on a real pager, tested by its author on one unit only (the SX1262 version). Expect rough edges.
+> **Status: working, and in active development.** Offline maps, heard stations, beaconing, two-way messaging, following your own position and
+> low-power operation with the screen off, and more, have been tested on a LilyGO T-LoRa Pager. So far that is one unit (the SX1262
+> version). Still being tested: motion wake while driving, following a station that is moving, and long runs on battery. We are still looking
+> for ways to reduce power ([notes](docs/low-power.md)).
 > **It transmits.** You need an amateur radio licence and your own call sign. The pager will not transmit until a call sign is saved.
 
 ![Map and heard stations](docs/screenshots/demo-list-and-map.png)
