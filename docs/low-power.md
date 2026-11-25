@@ -162,6 +162,9 @@ Measured, no change beyond noise:
 * **Position and time hint at boot:** the last good fix (saved to flash after a move of 3 km or more, at most every 10 minutes) and the
   RTC time are sent as `UBX-MGA-INI-POS_LLH` and `UBX-MGA-INI-TIME_UTC`. They shorten the first fix after a cold start. The M10's backup
   supply keeps satellite data through normal operation, so this mostly helps after the pager has been fully off.
+* **A wake-up can go unheard.** In one run, every second search or so got no characters at all from the receiver for its whole length. The
+  firmware now checks that data arrives after a wake-up and wakes the receiver again if not (reopening the serial port from the third try). The
+  cause is not known yet; `PW` shows how many retries each search needed.
 * **A restart can catch the GPS in backup.** Start-up therefore always sends the wake bytes.
 * The M10 key IDs and message layouts in `src/ubx.h` are from the u-blox M10 SPG 5.10 interface description (UBX-21035062) and are
   unit-tested in `test/host/test_ubx.cpp`.

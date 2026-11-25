@@ -48,6 +48,13 @@ int main() {
   expect(gpsMissSleep(true, 4, 5) == 300000UL, "had a fix: 5 minutes");
   expect(gpsMissSleep(true, 5, 5) == 900000UL, "five misses: 15 minutes");
   expect(gpsMissSleep(true, 5, 30) == 1800000UL, "a longer still setting is respected");
+  // waking again when the receiver stays silent
+  expect(gpsRewakeStep(1000, 0, 0) == GPS_WAIT, "give it 1.5 s first");
+  expect(gpsRewakeStep(1500, 0, 0) == GPS_SEND_AGAIN && gpsRewakeStep(1500, 0, 1) == GPS_SEND_AGAIN, "first two retries: send again");
+  expect(gpsRewakeStep(1500, 0, 2) == GPS_REOPEN_AND_SEND, "third retry reopens the port");
+  expect(gpsRewakeStep(60000, 500, 0) == GPS_WAIT, "data is arriving: leave it alone");
+  expect(gpsRewakeStep(1500, 5, 0) == GPS_SEND_AGAIN, "a few noise characters are not an answer");
+  expect(gpsRewakeStep(4999, 0, 5) == GPS_WAIT && gpsRewakeStep(5000, 0, 5) == GPS_REOPEN_AND_SEND, "after five quick retries: every 5 s");
   if (!fails) printf("gpsduty: all ok\n");
   return fails ? 1 : 0;
 }

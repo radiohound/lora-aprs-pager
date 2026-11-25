@@ -855,7 +855,7 @@ struct PEv { uint32_t ms; char tag; int a, b; };
 // The log lives in RTC memory, which survives a watchdog or software reset (not a power loss or the RST button), so after the pager has reset itself
 // the log still shows what it was doing just before. Each start adds an 'R' entry with the reset reason (1 power-on, 2 RST button, 3 software, 4 crash,
 // 5 interrupt watchdog, 6 task watchdog, 9 brown-out).
-struct BEv { uint32_t ms, utc; char tag; uint8_t a; uint16_t b; uint32_t c; };
+struct BEv { uint32_t ms, utc; char tag; uint8_t a; uint16_t b; uint32_t c; uint16_t d, e; };
 static const int BLOG_N = 128, GLOG_N = 96;
 struct PRst { uint32_t bootMs, upMs; int reason, stage; };                       // upMs: how long the run that ended had been up; stage: the code stage it was in
 struct PLogStore { uint32_t magic; int n; PEv buf[96]; uint32_t stage, stageMs, beats; int pins; PRst rst[8]; int rstN; uint32_t gpsWakes; uint32_t panics, pPc, pA0, pSp, pCore, pExc, pMs, pStack[8]; uint32_t cadTimeouts, cadMs, cadIrq; int cadStart, cadBusy, cadReinit, autoOn, autoRestores; BEv blog[BLOG_N], glog[GLOG_N]; int bN, gN; uint32_t bSent, bBusy, bFail, bNoFix, gFix, gNoFix; };   // stage: where the code was when the last marker was written
@@ -865,7 +865,7 @@ static RTC_NOINIT_ATTR PLogStore plogRtc;
 // Serial command PW prints them; look the addresses up with the toolchain's addr2line against the matching firmware.elf.
 extern "C" void __real_esp_panic_handler(panic_info_t *info);
 extern "C" void IRAM_ATTR __wrap_esp_panic_handler(panic_info_t *info) {
-  if (info && plogRtc.magic == 0x504C4F4B) {
+  if (info && plogRtc.magic == 0x504C4F4C) {
     const uint32_t *f = (const uint32_t *)info->frame;
     plogRtc.panics++; plogRtc.pCore = info->core; plogRtc.pExc = (uint32_t)info->exception; plogRtc.pMs = millis();
     plogRtc.pPc = (uint32_t)(uintptr_t)info->addr;
@@ -886,27 +886,29 @@ static inline void pstage(uint32_t st) { plogRtc.stage = st; plogRtc.stageMs = m
 static bool plogSleepOpen = false; static uint32_t plogTimerWakes = 0;
 static void plog(char tag, int a = 0, int b = 0) { PEv &e = plogBuf[plogN % 96]; e.ms = millis(); e.tag = tag; e.a = a; e.b = b; plogN++; plogSleepOpen = (tag == 's'); }
 static void plogInit() {                                    // at start-up: keep the log if the RTC memory still holds one, then note why we restarted
-  if (plogRtc.magic != 0x504C4F4B || plogRtc.n < 0) { memset(&plogRtc, 0, sizeof plogRtc); plogRtc.magic = 0x504C4F4B; }
+  if (plogRtc.magic != 0x504C4F4C || plogRtc.n < 0) { memset(&plogRtc, 0, sizeof plogRtc); plogRtc.magic = 0x504C4F4C; }
   { PRst &r = plogRtc.rst[plogRtc.rstN % 8]; r.reason = (int)esp_reset_reason(); r.stage = (int)plogRtc.stage; r.upMs = plogRtc.stageMs; r.bootMs = 0; plogRtc.rstN++; }   // never overwritten by ordinary entries
   plog('R', (int)esp_reset_reason(), (int)plogRtc.stage);
 }
 // Beacon log: 'B' a beacon was tried (a: 0 sent, 1 channel busy, 2 radio failed; b: satellites), 'N' one was due or asked for with no GPS fix
 // (a: 1 = by auto beacon), 'F' the first fix since this start (b: satellites). GPS log, one entry per wake window while the screen is off:
-// 'W' (a: 1 = fresh fix, 0 = gave up; b: seconds awake; third number: characters received from the GPS, 0 = it sent nothing). Kept apart from the event log so its routine entries cannot push these out.
-static void blogPut(BEv *ring, int size, int &n, char tag, int a, int b) { BEv &e = ring[n % size]; e.ms = millis(); e.utc = utcNow(); e.tag = tag; e.a = (uint8_t)a; e.b = (uint16_t)b; e.c = tag == 'W' ? gpsWinBytes : 0; n++; }
+// 'W' (a: 1 = fresh fix, 0 = gave up; b: seconds awake; third number: characters received from the GPS, 0 = it sent nothing; fourth: extra wake-ups needed; fifth: ms until data arrived, 0 = none seen). Kept apart from the event log so its routine entries cannot push these out.
+static void blogPut(BEv *ring, int size, int &n, char tag, int a, int b) { BEv &e = ring[n % size]; e.ms = millis(); e.utc = utcNow(); e.tag = tag; e.a = (uint8_t)a; e.b = (uint16_t)b; e.c = tag == 'W' ? gpsWinBytes : 0; e.d = 0; e.e = 0; n++; }
 static void blogBeacon(char tag, int a) {
   if (tag == 'B') { if (a == 0) plogRtc.bSent++; else if (a == 1) plogRtc.bBusy++; else plogRtc.bFail++; }
   else if (tag == 'N') plogRtc.bNoFix++;
   blogPut(plogRtc.blog, BLOG_N, plogRtc.bN, tag, a, gps.fix.sats);
 }
+static void gpsWinLogWake(struct BEv &e);                  // fills in this wake-up's retry count and time to first data
 static void blogGpsWindow(bool gotFix, uint32_t awakeMs) {
   if (gotFix) plogRtc.gFix++; else plogRtc.gNoFix++;
   blogPut(plogRtc.glog, GLOG_N, plogRtc.gN, 'W', gotFix, (int)(awakeMs / 1000));
+  gpsWinLogWake(plogRtc.glog[(plogRtc.gN - 1) % GLOG_N]);
 }
 static void blogPrint(const char *name, const BEv *ring, int size, int n) {
   int k = n < size ? n : size;
   Serial.printf("%s: %d entries, %d shown\n", name, n, k);
-  for (int i = n - k; i < n; i++) { const BEv &e = ring[i % size]; LocalTime c = clockBreak(e.utc); Serial.printf("  %9lu ms  %02d:%02d:%02d UTC  %c  %d %d %lu\n", (unsigned long)e.ms, c.hour, c.min, c.sec, e.tag, e.a, e.b, (unsigned long)e.c); esp_task_wdt_reset(); }
+  for (int i = n - k; i < n; i++) { const BEv &e = ring[i % size]; LocalTime c = clockBreak(e.utc); Serial.printf("  %9lu ms  %02d:%02d:%02d UTC  %c  %d %d %lu\n", (unsigned long)e.ms, c.hour, c.min, c.sec, e.tag, e.a, e.b, (unsigned long)e.c); if (e.tag == 'W') Serial.printf("    rewakes %u, first data after %u ms\n", e.d, e.e); esp_task_wdt_reset(); }
 }
 // Auto beacon comes back after a crash (4) or watchdog (5, 6, 7) restart if it was on. At most AUTO_RESTORE_MAX times in a row, so a pager stuck
 // in a crash loop cannot keep transmitting; the count clears after 30 minutes without a restart. Power-on, RST and "restart" never restore it.
@@ -926,9 +928,13 @@ static bool aSd = false, aPanel = false, aGps = false;     // what is applied ri
 static const uint32_t GPS_ON_MIN_MS = 6000;      // stay awake at least this long for a fresh fix; when to give up: gpsAwakeLimit() in gpsduty.h
 static bool gpsSleeping = false; static uint32_t gpsWakeAt = 0, gpsOnAt = 0, gpsEpochAtOn = 0, gpsIntervalMs = 60000;
 static int gpsMisses = 0;                                              // wake-ups in a row without a fresh fix
+static bool gpsAwaiting = false; static uint32_t gpsSentAt = 0;        // woken, no answer yet; when the wake bytes last went out
+static int gpsRewakes = 0; static uint32_t gpsFirstDataMs = 0;         // this wake-up: retries needed, and ms until data arrived (0 = none)
 static GpsAdaptive gpsAd;                                              // adaptive wake interval, see src/gpsduty.h (settings: moving seconds, still minutes)
+static void gpsWinLogWake(BEv &e) { e.d = (uint16_t)gpsRewakes; e.e = (uint16_t)std::min<uint32_t>(gpsFirstDataMs, 65535); }
 static void gpsBackup(bool gotFix) {
   blogGpsWindow(gotFix, millis() - gpsOnAt);
+  gpsAwaiting = false;
   gpsIntervalMs = gpsAdaptiveNext(gpsAd, gotFix && gps.fix.valid, gps.fix.lat, gps.fix.lon, S.gpsMoveSec, S.gpsStillMin);
   if (gotFix) gpsMisses = 0;
   else { if (gpsMisses < 100) gpsMisses++; gpsIntervalMs = gpsMissSleep(gpsEverFix, gpsMisses, S.gpsStillMin); }
@@ -942,6 +948,17 @@ static void gpsWake() {
   Serial1.begin(GPS_BAUD, SERIAL_8N1, PIN_GPS_RX, PIN_GPS_TX);
   for (int i = 0; i < 4; i++) Serial1.write((uint8_t)0xFF);
   gpsSleeping = false; gpsOnAt = millis(); gpsEpochAtOn = gps.fix.epoch; gpsWinBytes = 0; plog('g');
+  gpsAwaiting = true; gpsSentAt = gpsOnAt; gpsRewakes = 0; gpsFirstDataMs = 0;
+}
+static void gpsWakeCheck() {                                // every pass, screen on or off: did the receiver hear the wake-up? (gpsduty.h)
+  if (!gpsAwaiting || gpsSleeping) return;
+  uint32_t now = millis();
+  if (gpsWinBytes >= GPS_ANSWER_BYTES) { gpsAwaiting = false; gpsFirstDataMs = std::max<uint32_t>(now - gpsOnAt, 1); return; }
+  GpsRewake r = gpsRewakeStep(now - gpsSentAt, gpsWinBytes, gpsRewakes);
+  if (r == GPS_WAIT) return;
+  if (r == GPS_REOPEN_AND_SEND) { Serial1.end(); delay(5); Serial1.begin(GPS_BAUD, SERIAL_8N1, PIN_GPS_RX, PIN_GPS_TX); }
+  for (int i = 0; i < 4; i++) Serial1.write((uint8_t)0xFF);
+  gpsRewakes++; gpsSentAt = now;
 }
 static void gpsDuty() {                                     // called every pass while the screen is off
   if (!aGps) return;
@@ -966,7 +983,7 @@ static void powerApply() {
   bool off = screenState == 2 && !setupMode;
   bool wSd = off && pwrSd, wPanel = off && pwrPanel, wGps = off && pwrGps && S.gpsSleep && !demoMode;
   if (wSd != aSd || wPanel != aPanel || wGps != aGps) plog(off ? 'O' : 'o', wSd | (wPanel << 1) | (wGps << 2));
-  if (wGps != aGps) { if (wGps) { gpsSleeping = false; gpsOnAt = millis(); gpsEpochAtOn = gps.fix.epoch; gpsMisses = 0; gpsWinBytes = 0; gpsAdaptiveReset(gpsAd, gps.fix.valid, gps.fix.lat, gps.fix.lon); } else if (gpsSleeping) gpsWake(); aGps = wGps; }
+  if (wGps != aGps) { if (wGps) { gpsSleeping = false; gpsOnAt = millis(); gpsEpochAtOn = gps.fix.epoch; gpsMisses = 0; gpsWinBytes = 0; gpsAwaiting = true; gpsSentAt = millis(); gpsRewakes = 0; gpsFirstDataMs = 0; gpsAdaptiveReset(gpsAd, gps.fix.valid, gps.fix.lat, gps.fix.lon); } else if (gpsSleeping) gpsWake(); aGps = wGps; }
   // Waking: the SD card first, then the panel. After light sleep the panel's first sleep-out command, sent straight away, did not take; the same command
   // sent later (after the SD card was back) did. Going to sleep: panel first, then the SD card.
   if (!wSd && aSd) {
@@ -1441,7 +1458,7 @@ void loop() {
   if (setupMode) { setupTick(); return; }   // while the phone setup screen is open, nothing else runs (receiving still does)
 
   pstage(7);
-  screenTick(); gpsPosSave(); gpsDuty();
+  screenTick(); gpsPosSave(); gpsWakeCheck(); gpsDuty();
   { static uint32_t clkTickAt = 0; static int lastMin = -1, lastPct = -2; static bool lastChg = false;
     if (millis() - clkTickAt > 1000) {
       clkTickAt = millis(); clockTick();

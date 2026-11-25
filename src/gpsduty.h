@@ -35,6 +35,19 @@ inline uint32_t gpsMissSleep(bool everFix, int misses, int stillMin) {
   return mins * 60000UL;
 }
 
+// A wake-up that the receiver did not hear: it stays silent for the whole search. So after a wake-up, check that data arrives, and if it does
+// not, wake it again. An awake receiver sends hundreds of characters a second, so a handful (line noise) does not count as an answer.
+static const uint32_t GPS_ANSWER_BYTES = 20;
+static const uint32_t GPS_REWAKE_FAST_MS = 1500, GPS_REWAKE_SLOW_MS = 5000;   // the first 5 retries quickly, then every 5 s
+static const int GPS_REWAKE_FAST_TRIES = 5, GPS_REOPEN_FROM_TRY = 3;           // from the 3rd retry the serial port is reopened too
+enum GpsRewake { GPS_WAIT = 0, GPS_SEND_AGAIN = 1, GPS_REOPEN_AND_SEND = 2 };
+// sinceSendMs: since the wake bytes were last sent; bytes: received in this wake-up; tries: retries made so far.
+inline GpsRewake gpsRewakeStep(uint32_t sinceSendMs, uint32_t bytes, int tries) {
+  if (bytes >= GPS_ANSWER_BYTES) return GPS_WAIT;
+  if (sinceSendMs < (tries < GPS_REWAKE_FAST_TRIES ? GPS_REWAKE_FAST_MS : GPS_REWAKE_SLOW_MS)) return GPS_WAIT;
+  return tries + 1 >= GPS_REOPEN_FROM_TRY ? GPS_REOPEN_AND_SEND : GPS_SEND_AGAIN;
+}
+
 // Call when a wake-up ends. Returns how long to sleep, in milliseconds.
 // stillMin is the long interval; with a motion sensor it is the backstop check (nothing moved, but keep the GPS data fresh), so it can be long.
 inline uint32_t gpsAdaptiveNext(GpsAdaptive &a, bool gotFix, double lat, double lon, int moveSec, int stillMin) {
