@@ -6,8 +6,13 @@ Everything here was measured on one pager (SX1262, 433 MHz, 1500 mAh cell) with 
 
 ## The short version
 
-With the screen off the firmware used about **65 mA**, which is roughly 23 hours on the 1500 mAh cell. Most of that was not the
-processor, the GPS or the radio. It was:
+**Now:** with the screen off, the latest builds use about **20 to 21 mA** (20 minute runs with the pager still).
+**Before any power-saving changes** they used about **65 mA**, which is roughly 23 hours on the 1500 mAh cell. That is about two thirds less
+(approximate: the conditions were not identical). **We are still looking into ways to reduce power**, starting with why the later builds draw
+more than an earlier 14 mA run. Estimated battery life for different kinds of use is below.
+
+These are the main things that were drawing power in that 65 mA starting point, and what stopping each one saved in our experiments. Much of
+it was not the processor, the GPS or the radio doing their jobs:
 
 | What | Saves about | How |
 |---|---|---|
@@ -22,13 +27,8 @@ measured with the radio in standby. With the radio receiving that is about 12 mA
 
 What the firmware does today while the screen is off: light sleep, SD rail off with the chip-select floated, panel sleep, and the GPS
 in backup mode, waking for a fix on an adaptive interval (a minute at first, then 5 minutes while the pager sits still).
-**Best measured: 14 mA with the screen off, on battery** (see "Open: the later builds draw more" near the end), with the pager still (about 4 days on the 1500 mAh cell, against about 23 hours
-before; the first build without adaptive GPS read 24 mA). Later builds search longer for the GPS and have read 15 to 26 mA in short runs under
-different conditions. They have not been measured under the same conditions, so do not compare those figures. Details at the end of this file.
-
-**Where we are now:** from about **65 mA** before the work to about **20 to 21 mA** in the latest 20 minute runs with the pager still, about two
-thirds less (approximate: the conditions were not identical). **We are still looking into ways to reduce power**, starting with why the later
-builds draw more than the 14 mA run.
+An earlier build (2026-11-24) measured **14 mA** with the pager still (the first one without the adaptive GPS read 24 mA). The latest builds
+read about 20 to 21 mA, and why is not yet known: see "Open: the later builds draw more" near the end.
 
 ### Estimated battery life (1500 mAh)
 
