@@ -21,8 +21,9 @@ The pieces add up: 47 mA (light sleep, GPS off, SD off) - 14 (SD chip-select) - 
 measured with the radio in standby. With the radio receiving that is about 12 mA.
 
 What the firmware does today while the screen is off: light sleep, SD rail off with the chip-select floated, panel sleep, and the GPS
-in backup mode waking once a minute for a fix. **Measured with that build: 24 mA with the screen off, on battery** (about 2 to 2.5 days
-on the 1500 mAh cell, against about 23 hours before). Details at the end of this file.
+in backup mode, waking for a fix on an adaptive interval (a minute at first, then up to 5 minutes while the pager sits still).
+**Measured with that build: 14 mA with the screen off, on battery** (about 4 days on the 1500 mAh cell, against about 23 hours before; the
+first build without adaptive GPS read 24 mA). Details at the end of this file.
 
 ## How to save energy
 
@@ -233,8 +234,11 @@ From their `variants/esp32s3/tlora-pager` and `src/sleep.cpp` (read 2026-11-23, 
   state during deep sleep, or the +/-1 mAh error. Not resolved, so we do not treat 6 mA as exact.
 * **Real listening configuration.** The 6 mA figure has the GPS off and the radio in standby. Receiving adds about 6 mA, and the GPS
   duty cycle adds more. The measured result of the real build is below.
-* **The adaptive GPS interval is untested against real movement** (host-tested logic only, and indoors on the author's pager). Its effect on the
-  24 mA figure has not been measured yet.
+* **The adaptive GPS interval is untested against real movement** (host-tested logic only, and indoors on the author's pager). Its effect
+  was measured only while the pager sat still: 24 mA before, 14 mA after.
+* **An intermittent restart in light sleep is not fixed yet.** On some runs the interrupt watchdog (and, twice, the task watchdog)
+  resets the chip every few minutes to a couple of hours. The build keeps a log in RTC memory that survives these resets (serial
+  command `PW`); see "Light sleep: things that bit us". Treat the 14 mA as the draw of a run that did not restart.
 
 ## Reproducing and testing
 
@@ -262,13 +266,16 @@ logged the average current and the share of time asleep, and a 30-minute deep-sl
 
 ## Result of the shipped build
 
-**24 mA** with the screen off, USB unplugged, read from the Backspace menu's "Battery, screen off" line after the pager had been asleep with
-the screen off. One run, with the GPS waking once a minute (up to 30 s per wake), the radio receiving, and nothing else changed.
+**14 mA** with the screen off, USB unplugged: the average of 2,524 gauge readings (one every 2 s, readings taken with USB present are
+skipped), minimum -68 mA, maximum -10 mA, over about 1.4 hours with the pager still, the GPS in backup mode on a 5-minute interval (30 s
+awake per wake), the radio receiving continuously, and nothing else changed. Read with the serial command `PA`. The earlier build, with the
+GPS waking every minute, read 24 mA.
 
-Compared with 65 mA before the work, that is a reduction of about 63%. It is above the 12 mA the pieces add up to in the best case
-(radio receiving, GPS off), so about 12 mA is still being spent somewhere. The most likely cause is the GPS: if it cannot get a fix
-(indoors) it stays on for the full 30 s window each minute, which is about half the time at roughly 20 mA. Done since: the wake interval is now adaptive and a setting (see GPS). Still to try:
-* measuring the adaptive build, indoors and outdoors,
+Compared with 65 mA before the work, that is a reduction of about 78%. The pieces add up to about 12 mA in the best case (radio
+receiving, GPS off), so only about 2 mA is left to explain, most likely the GPS wakes. Estimates for what is still to come (not
+measured): receiving in short bursts at SF11/SF12 about 1 to 2 mA, waking the GPS on motion instead of a timer about 1.5 to 2 mA, both
+together about 10 to 11.5 mA. Still to try:
+* measuring the adaptive build while moving, and outdoors,
 * a shorter `GPS_ON_MAX_MS`, or giving up after a number of failed fixes,
 * switching the GPS off completely while the screen is off (then pin 12 and the other GPS pins must be floated, see "The leaks"),
 * a motion sensor (the board has one) to wake the GPS instead of a timer.

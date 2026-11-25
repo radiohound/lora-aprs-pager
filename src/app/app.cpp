@@ -4,6 +4,7 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include "motion.h"
+#include "esp_private/panic_internal.h"
 #include "../rxduty.h"
 static const int LORA_SF = 12; static const float LORA_BW_KHZ = 125.0f;   // the channel: LoRa APRS 433.775 MHz, SF12, 125 kHz, 8-symbol preamble
 static void rxApply();
@@ -776,15 +777,35 @@ struct PEv { uint32_t ms; char tag; int a, b; };
 // the log still shows what it was doing just before. Each start adds an 'R' entry with the reset reason (1 power-on, 2 RST button, 3 software, 4 crash,
 // 5 interrupt watchdog, 6 task watchdog, 9 brown-out).
 struct PRst { uint32_t bootMs, upMs; int reason, stage; };                       // upMs: how long the run that ended had been up; stage: the code stage it was in
-struct PLogStore { uint32_t magic; int n; PEv buf[96]; uint32_t stage, stageMs, beats; int pins; PRst rst[8]; int rstN; uint32_t gpsWakes; };   // stage: where the code was when the last marker was written
+struct PLogStore { uint32_t magic; int n; PEv buf[96]; uint32_t stage, stageMs, beats; int pins; PRst rst[8]; int rstN; uint32_t gpsWakes; uint32_t panics, pPc, pA0, pSp, pCore, pExc, pMs, pStack[8]; };   // stage: where the code was when the last marker was written
 static RTC_NOINIT_ATTR PLogStore plogRtc;
+// What the chip was doing when a watchdog or crash reset hit: the panic handler is wrapped (link option -Wl,--wrap=esp_panic_handler in platformio.ini) so the
+// interrupted program counter, return address, stack pointer and a few code addresses found on the stack go into RTC memory before the normal handler runs.
+// Serial command PW prints them; look the addresses up with the toolchain's addr2line against the matching firmware.elf.
+extern "C" void __real_esp_panic_handler(panic_info_t *info);
+extern "C" void IRAM_ATTR __wrap_esp_panic_handler(panic_info_t *info) {
+  if (info && plogRtc.magic == 0x504C4F49) {
+    const uint32_t *f = (const uint32_t *)info->frame;
+    plogRtc.panics++; plogRtc.pCore = info->core; plogRtc.pExc = (uint32_t)info->exception; plogRtc.pMs = millis();
+    plogRtc.pPc = (uint32_t)(uintptr_t)info->addr;
+    for (int i = 0; i < 8; i++) plogRtc.pStack[i] = 0;
+    if (f) {
+      plogRtc.pA0 = f[3]; plogRtc.pSp = f[4];
+      if (f[4] >= 0x3FC80000u && f[4] < 0x3FD00000u) {                        // stack in internal RAM: collect up to 8 words that look like code addresses
+        const uint32_t *w = (const uint32_t *)f[4]; int k = 0;
+        for (int i = 0; i < 160 && k < 8; i++) { uint32_t v = w[i]; if ((v >= 0x42000000u && v < 0x44000000u) || (v >= 0x40370000u && v < 0x403E0000u)) plogRtc.pStack[k++] = v; }
+      }
+    }
+  }
+  __real_esp_panic_handler(info);
+}
 #define plogBuf plogRtc.buf
 #define plogN plogRtc.n
-static inline void pstage(uint32_t st) { plogRtc.stage = st; plogRtc.stageMs = millis(); }   // 1 arming wake sources, 2 about to sleep, 3 woke, 4 pins restored, 5 loop pass started, 6 loop reached the radio, 7 loop reached the keys
+static inline void pstage(uint32_t st) { plogRtc.stage = st; plogRtc.stageMs = millis(); }   // 1 arming wake sources, 2 about to sleep, 3 woke, 4 pins restored, 5 loop pass started, 6 received packets, 7 screen/GPS duty, 8 keyboard check, 9 auto beacon, 10 message queue (19-24 inside a transmission: 19 beacon start, 20 listening, 21 listened, 22 transmitting, 23 sent, 24 done), 11 message screens, 12 redraw
 static bool plogSleepOpen = false; static uint32_t plogTimerWakes = 0;
 static void plog(char tag, int a = 0, int b = 0) { PEv &e = plogBuf[plogN % 96]; e.ms = millis(); e.tag = tag; e.a = a; e.b = b; plogN++; plogSleepOpen = (tag == 's'); }
 static void plogInit() {                                    // at start-up: keep the log if the RTC memory still holds one, then note why we restarted
-  if (plogRtc.magic != 0x504C4F48 || plogRtc.n < 0) { memset(&plogRtc, 0, sizeof plogRtc); plogRtc.magic = 0x504C4F48; }
+  if (plogRtc.magic != 0x504C4F49 || plogRtc.n < 0) { memset(&plogRtc, 0, sizeof plogRtc); plogRtc.magic = 0x504C4F49; }
   { PRst &r = plogRtc.rst[plogRtc.rstN % 8]; r.reason = (int)esp_reset_reason(); r.stage = (int)plogRtc.stage; r.upMs = plogRtc.stageMs; r.bootMs = 0; plogRtc.rstN++; }   // never overwritten by ordinary entries
   plog('R', (int)esp_reset_reason(), (int)plogRtc.stage);
 }
@@ -988,19 +1009,19 @@ static int txFrame(const unsigned char *f, size_t len) {
   if (demoMode) return 1;                              // demo mode never transmits
   bool free = false;
   for (int tries = 0; tries < 3 && !free; tries++) {
-    int c = radio->scanChannel();
+    pstage(20); int c = radio->scanChannel(); pstage(21);
     if (c == RADIOLIB_CHANNEL_FREE) free = true; else delay(300 + (esp_random() % 1200));
   }
   if (!free) { rxApply(); return 1; }
   // On battery the knob lines pick up transmitter noise and their pin-change interrupts can fire thousands of times a second, which trips the
   // interrupt watchdog (seen on this pager by the Meshtastic project). So the knob interrupts are off while we transmit.
   detachInterrupt(PIN_ROT_A); detachInterrupt(PIN_ROT_B);
-  int st = radio->transmit(f, len);
+  pstage(22); int st = radio->transmit(f, len); pstage(23);
   kLast = (digitalRead(PIN_ROT_A) << 1) | digitalRead(PIN_ROT_B); kAcc = 0; knobSteps = 0;
   attachInterrupt(PIN_ROT_A, knobIsr, CHANGE); attachInterrupt(PIN_ROT_B, knobIsr, CHANGE);
   rxFlag = false;                                   // the TX-done interrupt shares the receive pin
   rxApply();
-  M.noteTx(millis());
+  pstage(24); M.noteTx(millis());
   return st == RADIOLIB_ERR_NONE ? 0 : 2;
 }
 // A message or ack from the engine: "CALL>TOCALL,PATH" + the engine's info part.
@@ -1016,6 +1037,7 @@ static int txEngineItem(const msg::TxItem &it) {
 // Send one position beacon now. Listens first (channel activity detection, up to 3 tries with a random wait) and gives up if the
 // channel stays busy. Returns true if it went out. Blocks about 3 s at SF12.
 static bool sendBeacon() {
+  pstage(19);
   if (demoMode) { say("Demo mode: nothing is sent"); return false; }
   if (!radioOk) { say("No radio"); return false; }
   if (strcmp(S.call, "N0CALL") == 0) { say("Set your call sign: press Enter"); haptic.play(H_ERROR); return false; }
@@ -1023,12 +1045,12 @@ static bool sendBeacon() {
   unsigned char f[200];
   size_t len = aprsBuildBeacon(f, sizeof f, S.call, TOCALL, S.path, gps.fix.lat, gps.fix.lon, S.table, S.sym, S.comment);
   if (!len) { say("Beacon too long"); return false; }
-  say("Sending beacon..."); if (!ui.active()) render();
+  say("Sending beacon..."); if (!ui.active() && screenState != 2) render();   // never draw while the screen is off: the panel is asleep and its bus was just woken from light sleep
   int r = txFrame(f, len);
   if (r == 1) { say("Channel busy: beacon skipped"); return false; }
   if (r != 0) { say("TX failed"); haptic.play(H_ERROR); return false; }
   txCount++; beacon.sent(millis(), gps.fix.lat, gps.fix.lon); lastBeaconUtc = utcNow();
-  haptic.play(H_MESSAGE); say("Beacon sent");
+  pstage(25); haptic.play(H_MESSAGE); pstage(26); say("Beacon sent");
   return true;
 }
 
@@ -1103,6 +1125,10 @@ static void lightSleepOnce() {
   pstage(1);
   detachInterrupt(PIN_ROT_A); detachInterrupt(PIN_ROT_B);                                // no knob handler while the lines are level wake sources: noise on them on battery made a storm of interrupts inside the sleep call
   esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+  // The crash log (panic hook) showed the interrupt watchdog firing inside the GPIO interrupt routine right at wake-up: gpio_wakeup_enable() turns a pin into a LEVEL
+  // interrupt, and a pin that still had its processor interrupt enabled (the radio's DIO1, the knob lines) then re-fires without end when the processor wakes, before
+  // our code runs. Waking does not need the processor interrupt, so it is switched off for every wake pin first and switched on again after the restore below.
+  for (int pin : {PIN_LORA_IRQ, PIN_KB_INT, PIN_ROT_PRESS, PIN_ROT_A, PIN_ROT_B, PIN_GPS_RX}) gpio_intr_disable((gpio_num_t)pin);
   gpio_wakeup_enable((gpio_num_t)PIN_LORA_IRQ, GPIO_INTR_HIGH_LEVEL);
   if (digitalRead(PIN_KB_INT)) gpio_wakeup_enable((gpio_num_t)PIN_KB_INT, GPIO_INTR_LOW_LEVEL);
   if (digitalRead(PIN_ROT_PRESS)) gpio_wakeup_enable((gpio_num_t)PIN_ROT_PRESS, GPIO_INTR_LOW_LEVEL);
@@ -1124,6 +1150,7 @@ static void lightSleepOnce() {
   // gpio_wakeup_enable() had made these pins level-triggered interrupts: undo that at once, or a pin still at its wake level fires its interrupt forever (watchdog reset)
   for (int pin : {PIN_LORA_IRQ, PIN_KB_INT, PIN_ROT_PRESS, PIN_ROT_A, PIN_ROT_B, PIN_GPS_RX}) gpio_wakeup_disable((gpio_num_t)pin);
   gpio_set_intr_type((gpio_num_t)PIN_LORA_IRQ, GPIO_INTR_POSEDGE);                       // the radio library uses a rising edge
+  gpio_intr_enable((gpio_num_t)PIN_LORA_IRQ);
   attachInterrupt(PIN_ROT_A, knobIsr, CHANGE); attachInterrupt(PIN_ROT_B, knobIsr, CHANGE);                                      // the knob uses CHANGE
   for (int pin : {PIN_KB_INT, PIN_ROT_PRESS, PIN_GPS_RX}) gpio_set_intr_type((gpio_num_t)pin, GPIO_INTR_DISABLE);                // these are polled
   pstage(4);
@@ -1200,7 +1227,10 @@ void loop() {
           else if (cmd[1] == 'W') {                                               // the event log, oldest first
             int n = plogN < 96 ? plogN : 96, first = plogN - n; uint32_t now = millis();
             Serial.printf("event log: %d events, %lu timer wakes this run, now %lu ms; stage %lu set at %lu ms, %lu sleeps, pins at last sleep %d\n", plogN, (unsigned long)plogTimerWakes, (unsigned long)now, (unsigned long)plogRtc.stage, (unsigned long)plogRtc.stageMs, (unsigned long)plogRtc.beats, plogRtc.pins);
-            { int rn = plogRtc.rstN < 8 ? plogRtc.rstN : 8, rf = plogRtc.rstN - rn; Serial.printf("restarts (%d): ", plogRtc.rstN); for (int i = 0; i < rn; i++) { PRst &r = plogRtc.rst[(rf + i) % 8]; Serial.printf("[reason %d, stage %d, last stage at %lu ms] ", r.reason, r.stage, (unsigned long)r.upMs); } Serial.printf("\nGPS-only wakes %lu\n", (unsigned long)plogRtc.gpsWakes); }
+            { int rn = plogRtc.rstN < 8 ? plogRtc.rstN : 8, rf = plogRtc.rstN - rn; Serial.printf("restarts (%d): ", plogRtc.rstN); for (int i = 0; i < rn; i++) { PRst &r = plogRtc.rst[(rf + i) % 8]; Serial.printf("[reason %d, stage %d, last stage at %lu ms] ", r.reason, r.stage, (unsigned long)r.upMs); } Serial.printf("\nGPS-only wakes %lu\n", (unsigned long)plogRtc.gpsWakes); 
+            Serial.printf("panics recorded %lu; last: pc 0x%08lx, return 0x%08lx, sp 0x%08lx, core %lu, kind %lu (1 interrupt wdt, 2 task wdt, 3 abort, 4 fault) at %lu ms; code addresses on its stack:", (unsigned long)plogRtc.panics, (unsigned long)plogRtc.pPc, (unsigned long)plogRtc.pA0, (unsigned long)plogRtc.pSp, (unsigned long)plogRtc.pCore, (unsigned long)plogRtc.pExc, (unsigned long)plogRtc.pMs);
+            for (int i = 0; i < 8; i++) if (plogRtc.pStack[i]) Serial.printf(" 0x%08lx", (unsigned long)plogRtc.pStack[i]);
+            Serial.println(); }
             for (int i = 0; i < n; i++) { PEv &e = plogBuf[(first + i) % 96]; Serial.printf("  %9lu ms  %c  %d %d\n", (unsigned long)e.ms, e.tag, e.a, e.b); }
           }
           else if (cmd[1] == 'L') { pwrSleep = cmd[2] == '1'; }
@@ -1228,6 +1258,7 @@ void loop() {
     }
   }
 
+  pstage(6);
   // received packets
   if (rxFlag && radioOk) {
     rxFlag = false;
@@ -1255,6 +1286,7 @@ void loop() {
 
   if (setupMode) { setupTick(); return; }   // while the phone setup screen is open, nothing else runs (receiving still does)
 
+  pstage(7);
   screenTick(); gpsPosSave(); gpsDuty();
   { static uint32_t clkTickAt = 0; static int lastMin = -1, lastPct = -2; static bool lastChg = false;
     if (millis() - clkTickAt > 1000) {
@@ -1263,6 +1295,7 @@ void loop() {
       if (mn != lastMin || batPct != lastPct || batCharging != lastChg) { lastMin = mn; lastPct = batPct; lastChg = batCharging; if (ui.active()) ui.dirty = true; else dirty = true; }
     } }
 
+  pstage(8);
   // the keyboard chip can lose its setup (a radio transmission right next to it, a power glitch): check once a second and set it up again
   static uint32_t kbChecked = 0; static int kbResets = 0;
   if (millis() - kbChecked > 1000) {
@@ -1335,15 +1368,17 @@ void loop() {
     }
     dirty = true;
   }
+  pstage(9);
   // auto beacon
   static uint32_t nextTry = 0;
   if (autoBeacon && (int32_t)(millis() - nextTry) >= 0 && beacon.due(millis(), gps.fix.valid, gps.fix.lat, gps.fix.lon)) { if (!sendBeacon()) nextTry = millis() + 10000; }
 
+  pstage(10);
   // messages and acks waiting to go out
   if (radioOk && M.callOk()) {
     msg::TxItem it;
     if (M.nextTx(millis(), it)) {
-      if (!ui.active()) { say(it.isAck ? "Sending ack..." : "Sending message..."); render(); }
+      if (!ui.active()) { say(it.isAck ? "Sending ack..." : "Sending message..."); if (screenState != 2) render(); }
       int r = txEngineItem(it); M.txDone(r == 0, millis());
       if (r == 2) haptic.play(H_ERROR); else if (r == 0 && !it.isAck) haptic.play(H_TICK);
       ui.dirty = true; dirty = true;
@@ -1353,6 +1388,7 @@ void loop() {
   static uint32_t chgAt = 0;
   if (M.changed) { if (!chgAt) chgAt = millis(); if (millis() - chgAt > 3000) { msgSave(); M.changed = false; chgAt = 0; } }
 
+  pstage(11);
   // the messages screens replace the map while they are open
   if (ui.active()) {
     static uint32_t uiDrawn = 0;
@@ -1367,6 +1403,7 @@ void loop() {
   if ((stView == 0 || stView == 3) && millis() - lastAge > 15000) { lastAge = millis(); dirty = true; }
   static uint32_t lastFade = 0;
   if (stView == 3 && millis() - lastHeardAt < FRESH_MS + 1500 && millis() - lastFade > 1000) { lastFade = millis(); dirty = true; }     // let the green highlight fade out
+  pstage(12);
   // redraw at most every 300 ms (stations and GPS arrive in bursts)
   if (dirty && screenState != 2 && millis() - lastDraw > 300) { dirty = false; lastDraw = millis(); render(); }
   else if (notice && millis() > noticeUntil && !dirty) { notice = nullptr; dirty = true; }
