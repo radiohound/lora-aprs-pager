@@ -17,6 +17,24 @@ static const double GPS_STILL_M = 40.0;   // two fixes closer than this (GPS jit
 inline void gpsAdaptiveReset(GpsAdaptive &a, bool haveFix, double lat, double lon) {   // the screen has just gone off
   a.still = 0; a.prevLat = haveFix ? lat : 999; a.prevLon = haveFix ? lon : 999;
 }
+// How long one wake-up may search before giving up, and how long to sleep after a miss. `misses` = wake-ups in a row without a fresh fix.
+// Until the first fix since start-up the GPS gets a long search: a first fix can take minutes, and cutting it off early can stop it ever arriving.
+// The limits still end, so a pager indoors does not search all the time.
+static const uint32_t GPS_FIRST_LIMIT_MS = 300000;                                     // no fix since start-up
+static const uint32_t GPS_LIMIT_MS = 30000, GPS_LIMIT_1_MS = 90000, GPS_LIMIT_2_MS = 180000;   // had a fix: 0, 1, 2 or more misses
+inline uint32_t gpsAwakeLimit(bool everFix, int misses) {
+  if (!everFix) return GPS_FIRST_LIMIT_MS;
+  return misses <= 0 ? GPS_LIMIT_MS : (misses == 1 ? GPS_LIMIT_1_MS : GPS_LIMIT_2_MS);
+}
+// `misses` includes the one that has just ended. Two quick retries, then 5 minutes (or the long interval if that is longer);
+// with a fix behind us, five misses in a row stretch it to 15 minutes.
+inline uint32_t gpsMissSleep(bool everFix, int misses, int stillMin) {
+  if (misses < 3) return 60000UL;
+  uint32_t mins = stillMin > 5 ? stillMin : 5;
+  if (everFix && misses >= 5 && mins < 15) mins = 15;
+  return mins * 60000UL;
+}
+
 // Call when a wake-up ends. Returns how long to sleep, in milliseconds.
 // stillMin is the long interval; with a motion sensor it is the backstop check (nothing moved, but keep the GPS data fresh), so it can be long.
 inline uint32_t gpsAdaptiveNext(GpsAdaptive &a, bool gotFix, double lat, double lon, int moveSec, int stillMin) {

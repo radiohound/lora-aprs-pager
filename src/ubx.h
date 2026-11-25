@@ -46,3 +46,37 @@ inline size_t ubxMgaTime(uint32_t utc, uint16_t accSec, uint8_t *out) {
   ubxPut(m + 16, accSec, 2);
   return ubxFrame(0x13, 0x40, m, 24, out);
 }
+
+// CFG-NAVSPG-ACKAIDING: make the receiver answer each assistance message with UBX-MGA-ACK (off by default). `out` needs 24 bytes.
+inline size_t ubxAckAidingOn(uint8_t *out) {
+  const uint32_t k[1] = {0x10110025}, v[1] = {1}; const uint8_t z[1] = {1};
+  return ubxValset(k, v, z, 1, out);
+}
+
+// Picks short UBX frames (payload up to 16 bytes) out of the receiver's output, which also carries NMEA text. Feed every byte;
+// true = a complete frame with a good checksum is in cls, id, len, pl. Longer frames are ignored.
+struct UbxScan {
+  uint8_t cls = 0, id = 0, pl[16] = {0}; uint16_t len = 0;
+  int st = 0; uint16_t i = 0; uint8_t a = 0, b = 0;
+  void sum(uint8_t c) { a += c; b += a; }
+  bool feed(uint8_t c) {
+    switch (st) {
+      case 0: if (c == 0xB5) st = 1; return false;
+      case 1: st = c == 0x62 ? 2 : (c == 0xB5 ? 1 : 0); a = b = 0; return false;
+      case 2: cls = c; sum(c); st = 3; return false;
+      case 3: id = c; sum(c); st = 4; return false;
+      case 4: len = c; sum(c); st = 5; return false;
+      case 5: len |= (uint16_t)c << 8; sum(c); i = 0; st = len > sizeof pl ? 0 : (len ? 6 : 7); return false;
+      case 6: pl[i++] = c; sum(c); if (i >= len) st = 7; return false;
+      case 7: st = c == a ? 8 : 0; return false;
+      default: st = 0; return c == b;
+    }
+  }
+};
+
+// The receiver's answer about the assistance message whose first payload byte was `msgType` (0x01 position, 0x10 time).
+// UBX-MGA-ACK-DATA0 payload: type (1 = accepted, 0 = not used), version, infoCode, msgId, first 4 payload bytes of the message.
+inline bool ubxIsMgaAck(const UbxScan &f, uint8_t msgType) { return f.cls == 0x13 && f.id == 0x60 && f.len == 8 && f.pl[3] == 0x40 && f.pl[4] == msgType; }
+// UBX-ACK-ACK (1) or UBX-ACK-NAK (0) for a UBX-CFG-VALSET; -1 = this frame is neither.
+inline int ubxValsetAnswer(const UbxScan &f) { return (f.cls == 0x05 && f.id <= 1 && f.len == 2 && f.pl[0] == 0x06 && f.pl[1] == 0x8A) ? f.id : -1; }
+

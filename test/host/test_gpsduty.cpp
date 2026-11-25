@@ -38,6 +38,16 @@ int main() {
   expect(!gpsAdaptiveOnMotion(a, 30000), "a second movement wake within a minute is held back (vibration)");
   expect(a.still >= 2, "and the long sleep goes on");
   expect(gpsAdaptiveOnMotion(a, 61001 + 1000), "a minute later it wakes again");
+  // search limits and retry pauses
+  expect(gpsAwakeLimit(false, 0) == 300000UL && gpsAwakeLimit(false, 9) == 300000UL, "no fix since start-up: 5 minute searches");
+  expect(gpsAwakeLimit(true, 0) == 30000UL, "had a fix: 30 s");
+  expect(gpsAwakeLimit(true, 1) == 90000UL, "after one miss: 90 s");
+  expect(gpsAwakeLimit(true, 2) == 180000UL && gpsAwakeLimit(true, 8) == 180000UL, "after two or more: 3 minutes");
+  expect(gpsMissSleep(false, 1, 5) == 60000UL && gpsMissSleep(false, 2, 5) == 60000UL, "two quick retries");
+  expect(gpsMissSleep(false, 3, 5) == 300000UL && gpsMissSleep(false, 20, 5) == 300000UL, "never had a fix: then every 5 minutes");
+  expect(gpsMissSleep(true, 4, 5) == 300000UL, "had a fix: 5 minutes");
+  expect(gpsMissSleep(true, 5, 5) == 900000UL, "five misses: 15 minutes");
+  expect(gpsMissSleep(true, 5, 30) == 1800000UL, "a longer still setting is respected");
   if (!fails) printf("gpsduty: all ok\n");
   return fails ? 1 : 0;
 }

@@ -31,6 +31,17 @@ int main() {
   expect(n == 32 && f[4] == 24 && f[6] == 0x10 && f[9] == 18, "TIME_UTC header and leap seconds");
   expect((f[10] | f[11] << 8) == 2026 && f[12] == 11 && f[13] == 23 && f[14] == 22 && f[15] == 5 && f[16] == 9, "TIME_UTC date and time");
   expect((f[22] | f[23] << 8) == 5, "TIME_UTC accuracy");
+  // acknowledgments
+  n = ubxAckAidingOn(f);
+  expect(n == 17 && f[3] == 0x8A && f[10] == 0x25 && f[11] == 0x00 && f[12] == 0x11 && f[13] == 0x10 && f[14] == 1, "ACKAIDING on: key and value");
+  auto scan = [](UbxScan &s, const uint8_t *d, size_t len) { int hits = 0; for (size_t i = 0; i < len; i++) if (s.feed(d[i])) hits++; return hits; };
+  { UbxScan s; uint8_t r[40]; const uint8_t ack[8] = {1, 0, 0, 0x40, 0x10, 0, 0, 18};
+    const char *nmea = "$GNGGA,,,,,,0,00,99.99,,,,,,*56\r\n"; expect(scan(s, (const uint8_t *)nmea, strlen(nmea)) == 0, "NMEA text is no frame");
+    size_t m = ubxFrame(0x13, 0x60, ack, 8, r); expect(scan(s, r, m) == 1, "MGA-ACK found after NMEA text");
+    expect(ubxIsMgaAck(s, 0x10) && !ubxIsMgaAck(s, 0x01) && s.pl[0] == 1 && s.pl[2] == 0, "it answers the time hint, not the position hint");
+    r[m - 1] ^= 1; expect(scan(s, r, m) == 0, "bad checksum rejected");
+    const uint8_t cfg[2] = {0x06, 0x8A}; m = ubxFrame(0x05, 0x01, cfg, 2, r); expect(scan(s, r, m) == 1 && ubxValsetAnswer(s) == 1, "VALSET acknowledged");
+    m = ubxFrame(0x05, 0x00, cfg, 2, r); expect(scan(s, r, m) == 1 && ubxValsetAnswer(s) == 0, "VALSET refused"); }
   if (!fails) printf("ubx: all ok\n");
   return fails ? 1 : 0;
 }

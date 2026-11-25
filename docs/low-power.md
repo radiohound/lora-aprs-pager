@@ -154,7 +154,10 @@ Measured, no change beyond noise:
   of the time and read 42 mA. **Indoors it cannot hold a fix** and falls back to streaming continuously: 26% asleep, 60 mA. It is
   unreliable and we do not use it.
 * **Backup mode** (`UBX-RXM-PMREQ`, backup flag, wake on UART RX edge) is deterministic. Any byte sent to the receiver wakes it. The
-  firmware wakes it once a minute, waits for a new fix (at least 6 s, at most 30 s), then puts it back. While the screen is on it runs
+  firmware wakes it, waits for a new fix (at least 6 s), then puts it back. How long it may search (`src/gpsduty.h`): up to 5 minutes until the first
+  fix since start-up; after that 30 s, then 90 s and 3 minutes after misses. After a miss it retries after 1 minute twice, then every 5 minutes
+  (15 minutes after five misses if it has had a fix). The earlier fixed 30 s limit is the one the power figures here were measured with; searching longer
+  costs more, as the processor does not light-sleep meanwhile (not yet measured). While the screen is on it runs
   continuously.
 * **Position and time hint at boot:** the last good fix (saved to flash after a move of 3 km or more, at most every 10 minutes) and the
   RTC time are sent as `UBX-MGA-INI-POS_LLH` and `UBX-MGA-INI-TIME_UTC`. They shorten the first fix after a cold start. The M10's backup
