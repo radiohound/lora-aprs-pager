@@ -12,7 +12,7 @@ processor, the GPS or the radio. It was:
 | What | Saves about | How |
 |---|---|---|
 | Processor in **light sleep** between events | 22 mA | stop the CPU; wake on radio, key, knob, the motion sensor or a 1 s timer (not on GPS data, see below) |
-| **SD card** unpowered *and its chip-select floated* | 14 mA | cutting the rail alone is not enough, see "The leaks" |
+| **SD card** chip-select floated while its supply is off | 14 mA *against the leaking state* | not a saving against a card left powered: see "Open: the later builds draw more" |
 | **Display panel** put to sleep (not just the backlight) | 13 mA | panel sleep command |
 | **GPS** unpowered *and its serial pins floated* | 28 mA | measured, but the firmware uses GPS backup mode instead (below) |
 | Radio in standby instead of receiving | 6 mA | not used: receiving is the job |
@@ -22,9 +22,33 @@ measured with the radio in standby. With the radio receiving that is about 12 mA
 
 What the firmware does today while the screen is off: light sleep, SD rail off with the chip-select floated, panel sleep, and the GPS
 in backup mode, waking for a fix on an adaptive interval (a minute at first, then 5 minutes while the pager sits still).
-**Best measured: 14 mA with the screen off, on battery**, with the pager still (about 4 days on the 1500 mAh cell, against about 23 hours
+**Best measured: 14 mA with the screen off, on battery** (see "Open: the later builds draw more" near the end), with the pager still (about 4 days on the 1500 mAh cell, against about 23 hours
 before; the first build without adaptive GPS read 24 mA). Later builds search longer for the GPS and have read 15 to 26 mA in short runs under
 different conditions. They have not been measured under the same conditions, so do not compare those figures. Details at the end of this file.
+
+**Where we are now:** from about **65 mA** before the work to about **20 to 21 mA** in the latest 20 minute runs with the pager still, about two
+thirds less (approximate: the conditions were not identical). **We are still looking into ways to reduce power**, starting with why the later
+builds draw more than the 14 mA run.
+
+### Estimated battery life (1500 mAh)
+
+Estimates for planning, **not measured battery life**. Each day is 24 hours with auto-beacon on; outside the 8 hours named, the pager is still
+with the screen off.
+
+| Use | Current assumed in those 8 hours | Days at full rated capacity | Days if 85% of it is usable |
+|---|---|---|---|
+| Standing still, screen off all day | 21 mA (measured in 20 minute runs) | about 3.0 | about 2.5 |
+| Moving 8 hours a day, screen off | 28 mA (estimate) | about 2.7 | about 2.3 |
+| Standing still, screen on 8 hours a day | 108 mA (measured on an earlier build) | about 1.2 | about 1.1 |
+| Moving 8 hours a day, screen on for those hours | 112 mA (estimate) | about 1.2 | about 1.0 |
+
+For comparison, 65 mA with the screen off all day was about 23 hours, at full rated capacity.
+
+How the moving figures were estimated: the "moving, screen off" case is driving, with a beacon about every 68 s. It takes about 19 mA outside
+GPS searches, adds about 5 mA for searches (their lengths in a drive log: about 13% of the time, at about 35 mA extra) and about 5 mA for
+transmitting (2.6 s each time, assumed about 120 mA extra, not measured). Walking beacons less often. With the screen on the GPS runs all the
+time and 4 mA is added for the beacons. The screen-on current depends on the brightness, and has not been measured on the current build. Cold,
+battery age, weak GPS reception, messages and busy use will all change these figures.
 
 ## How to save energy
 
@@ -41,8 +65,8 @@ What follows is measured where a number is given. Where there is none, the advic
 * **Beacon less often.** Each beacon is a transmission and wakes the GPS. The moving and standing-still intervals and the distance
   that counts as "moved" are on the setup page. Longer intervals cost less. (Not measured separately.)
 * **Lower the transmit power** if your contacts hear you well. The setup page has a power setting. (Not measured separately.)
-* **Switch auto-beacon off** if you only want to listen: Backspace menu, "Auto-beacon". The pager still receives and the GPS still wakes
-  once a minute while the screen is off.
+* **Switch auto-beacon off** if you only want to listen: Backspace menu, "Auto-beacon". The pager still receives, and the GPS still wakes
+  on its usual schedule while the screen is off.
 * **Power off** (Backspace menu) when you will not use it for days. The pager refuses to power off while USB is connected.
 * **Leave the SD card in.** Reading tiles is cheap; the card is powered down by the firmware while the screen is off.
 
@@ -81,6 +105,9 @@ only means something with USB unplugged.
   short steps.
 * **Remaining capacity (0x10)** counts whole mAh. Over 30 minutes at 16 mA that is 8 mAh, an error of about +/-12%. Longer is better.
 * The gauge wanders by roughly +/-3 mA between identical runs. Everything below should be read with that in mind.
+* We found no current offset or overall accuracy figure in mA in the BQ27220 data sheet's specification tables, so the absolute values at
+  around 20 mA are unverified. Comparing runs on the same pager is likely to be more reliable than any single value. The battery is inside the
+  case with no outside connection, so checking against an external power analyser means opening the pager.
 * To know whether light sleep was really sleeping, the experiment code also logged the share of each step spent inside
   `esp_light_sleep_start()`. A reading is only meaningful if that is near 100%. Many early "no saving" results turned out to be the
   processor being woken constantly (GPS streaming, a floating wake pin).
@@ -136,7 +163,7 @@ diodes and partly powers it.** The chip then draws current from the pin instead 
   so beacons failed with the screen off. CS held high all the time works but leaks (above). The firmware drives CS high only while it talks to the
   radio and waits 2 ms before each exchange; without that wait it still failed (in `PX`: 0, 20 and 100 us failed; 500 us, 2 ms and 10 ms
   passed). Confirmed on battery on one pager: before the fix every screen-off beacon failed; with it, the scheduled beacons went out and
-  stations were received with the screen off. How much current this saves compared with leaving the card powered is still to be measured.
+  stations were received with the screen off. A first comparison with the card left powered showed no clear difference in current (see "Open: the later builds draw more").
 * **GPS.** With `GPS_EN` low and the ESP32 still driving the serial lines, the GPS leak was about 28 mA. Floating GPIO 4, 12 and 13
   (permanently, as plain inputs) took the configuration from 34 mA to 6 mA.
 * **Radio.** Cutting `LORA_EN` made things *worse* by 18 mA (65 mA vs 47 mA), for the same reason: the SPI and control lines kept
@@ -182,8 +209,9 @@ Measured, no change beyond noise:
 * The M10 key IDs and message layouts in `src/ubx.h` are from the u-blox M10 SPG 5.10 interface description (UBX-21035062) and are
   unit-tested in `test/host/test_ubx.cpp`.
 * **The wake interval is adaptive and a setting** (phone setup, "Battery, screen off"). While the pager is moving it wakes the GPS every
-  `gpsmv` seconds (default 60). Once two wake-ups in a row find it within 40 m of the previous fix, or find no fix at all (probably indoors and
-  not going anywhere), it backs off to `gpsst` minutes (default 5). A fix that shows movement brings the short interval back at once. The logic is
+  `gpsmv` seconds (default 60). Once two wake-ups in a row find it within 40 m of the previous fix (150 m while the motion sensor is running
+  and has reported nothing), it backs off to `gpsst` minutes (default 5). A fix that shows movement brings the short interval back at once.
+  Searches that find no fix have their own pauses (above). The logic is
   `src/gpsduty.h`, tested in `test/host/test_gpsduty.cpp`. "GPS sleeps while the screen is off" can be switched off to keep the GPS running.
 * Beacons use the most recent fix, so a beacon sent while the screen is off can be a little old. Without motion wake, a move that starts
   during the long interval is noticed at the next wake (up to `gpsst` minutes; on a drive this left an 8 minute gap in the beacons).
@@ -214,7 +242,7 @@ packet counts before relying on it. Only with the screen off; with the screen on
   edge type. Meshtastic's `sleep.cpp` handles the same trap (it masks the radio interrupt while the level wake is armed).
 * **Do not wake on the GPS serial line while the GPS is talking.** An overnight soak test of the adaptive-GPS build restarted 26 times, all
   interrupt-watchdog resets inside `esp_light_sleep_start()`, soon after a GPS wake-up. The GPS line's level wake fired in a storm. The firmware
-  now has no wake on that line and does not light-sleep while the GPS is awake (its 6 to 30 s window). The restart list in `PW` (reason and
+  now has no wake on that line and does not light-sleep while the GPS is awake (at least 6 s, and up to 5 minutes while it searches). The restart list in `PW` (reason and
   stage of each restart, kept in RTC memory) is what found this.
 * **Do not sleep with a packet already latched.** If DIO1 is high before sleeping, skip the sleep and service the radio.
 * **Never sleep with USB attached.** The serial port disappears. The firmware reads the charger's VBUS status and stays awake.
@@ -287,7 +315,24 @@ The experiment code that produced the tables above (a self-running test that ste
 logged the average current and the share of time asleep, and a 30-minute deep-sleep capacity test) is in the git history of the
 `power-saving` branch.
 
-## Result of the shipped build
+## Open: the later builds draw more, and it is not yet explained
+
+Two 20 minute runs on one build, on battery, the pager still in the same place, motion wake on, 3 beacons each:
+
+| Screen off | SD card power off (with the chip-select fix) | SD card left powered (`PS0`) |
+|---|---|---|
+| Average (about 600 gauge readings) | 21 mA | 21 mA |
+| Share of the time searching for GPS | 6% | 4% |
+
+Allowing for the searches (estimated at about 35 mA extra: the receiver's 12 to 15 mA from the MIA-M10Q data sheet, and about 22 mA because
+the processor does not light-sleep meanwhile; an estimate, not a measurement) leaves about 19 and 20 mA. So **these runs do not show that
+switching the card off saves anything**: the fix is needed to keep the radio working with the card off, but a saving is not established. Other
+runs that day gave about 16 to 21 mA after the same allowance, against about 11 mA for the 14 mA run below. The cause of that difference is not
+known. The 14 mA build also had the radio and GPS wake faults described above, so it is not certain that everything in it was working. Short
+runs on the fuel gauge cannot resolve differences of a few mA with confidence; the next steps are to repeat the old build in the same place and
+to measure with an external power analyser.
+
+## Result of the earlier build (2026-11-24)
 
 **14 mA** with the screen off, USB unplugged: the average of 2,524 gauge readings (one every 2 s, readings taken with USB present are
 skipped), minimum -68 mA, maximum -10 mA, over about 1.4 hours with the pager still, the GPS in backup mode on a 5-minute interval (30 s
@@ -295,7 +340,7 @@ awake per wake), the radio receiving continuously, and nothing else changed. Rea
 GPS waking every minute, read 24 mA.
 
 Compared with 65 mA before the work, that is a reduction of about 78%. The pieces add up to about 12 mA in the best case (radio
-receiving, GPS off), so only about 2 mA is left to explain, most likely the GPS wakes. Estimates for what is still to come (not
+receiving, GPS off), so only about 2 mA was left to explain, thought at the time to be the GPS wakes. Estimates made then for later work (never
 measured): receiving in short bursts at SF11/SF12 about 1 to 2 mA, waking the GPS on motion instead of a timer about 1.5 to 2 mA, both
 together about 10 to 11.5 mA. Still to try:
 * measuring the adaptive build while moving, and outdoors,
