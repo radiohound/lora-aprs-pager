@@ -23,6 +23,7 @@ struct Parsed {
   Kind kind = K_NONE;
   char from[10] = {}, to[10] = {}, id[7] = {}, replyAck[7] = {};
   std::string text;
+  bool mayRepeat = false;      // heard straight from the sender with a path a digipeater may still act on: a repeat is probably coming
 };
 
 static const int MAX_TEXT = 67;                 // characters we send
@@ -30,6 +31,9 @@ static const int STORE_TEXT = 168;              // characters we keep of a recei
 static const uint32_t RETRY_S[6] = {30, 60, 120, 240, 480, 960};   // wait after try 1, 2, ... (LoRa at SF12 is slow)
 static const int MAX_TRIES = 6;
 static const uint32_t BUSY_RETRY_MS = 30000, MSG_GAP_MS = 3000, ACK_DELAY_MS = 1500, ACK_SPACING_MS = 30000;
+// If a digipeater may be about to repeat the message, an ack sent at once collides with that repeat at the sender, which then hears neither.
+// So wait about long enough for the repeat to finish (a short packet at SF12 takes 2 to 3 s, plus the digipeater's own wait). A starting figure.
+static const uint32_t ACK_DELAY_RELAY_MS = 6000;
 static const uint32_t DUP_WINDOW_MS = 20UL * 60UL * 1000UL, UNDO_MS = 10000;
 static const size_t MAX_MESSAGES = 300;
 
@@ -54,12 +58,27 @@ inline bool validCall(const std::string &c) {
 }
 inline bool alnum(const std::string &s) { for (unsigned char c : s) if (!isalnum(c)) return false; return true; }
 
+// True if no digipeater has handled this frame yet (nothing marked '*') and its path still asks for one: WIDEn-N or TRACEn-N with N above
+// zero, or a digipeater named by call sign.
+inline bool pathMayRepeat(const char *s, size_t n) {          // s: the path entries after the destination, "WIDE1-1,WIDE2-1"
+  if (memchr(s, '*', n)) return false;
+  size_t a = 0;
+  for (size_t i = 0; i <= n; i++) {
+    if (i < n && s[i] != ',') continue;
+    std::string h(s + a, i - a); a = i + 1;
+    if (h.compare(0, 4, "WIDE") == 0 || h.compare(0, 5, "TRACE") == 0) { size_t d = h.find('-'); if (d != std::string::npos && atoi(h.c_str() + d + 1) > 0) return true; }
+    else if (validCall(h)) return true;
+  }
+  return false;
+}
+
 // Parse the text of a LoRa APRS frame (after the 3C FF 01 header): "SRC>DST,PATH::ADDRESSEE:text{id"
 inline Parsed parse(const char *t, size_t n) {
   Parsed p;
   const char *gt = (const char *)memchr(t, '>', n), *colon = (const char *)memchr(t, ':', n);
   if (!gt || !colon || gt > colon || gt == t || (size_t)(gt - t) > 9) return p;
   memcpy(p.from, t, gt - t);
+  { const char *comma = (const char *)memchr(gt, ',', colon - gt); if (comma) p.mayRepeat = pathMayRepeat(comma + 1, colon - comma - 1); }
   const char *info = colon + 1; size_t m = n - (info - t);
   if (m < 11 || info[0] != ':' || info[10] != ':') return p;
   std::string to = upperStr(trimSpaces(info + 1, 9));
@@ -131,13 +150,17 @@ public:
     std::string text = p.text.substr(0, STORE_TEXT - 1);
     if (p.id[0] && !plain) {                                                    // numbered: ack every copy, show once
       for (auto &s : seen) if (!strcmp(s.from, p.from) && !strcmp(s.id, p.id) && s.text == text && (uint32_t)(now - s.firstAt) < DUP_WINDOW_MS) {
-        if (due(now, s.lastAckAt + ACK_SPACING_MS)) { queueAck(p.from, p.id, now); s.lastAckAt = now + ACK_DELAY_MS; }
+        uint32_t wait = ackWait(p);
+        // a repeated copy while our ack is still waiting: the repeat we waited for has been sent, so answer shortly
+        if (!p.mayRepeat) for (auto &a : acks) if (!strcmp(a.to, p.from) && !strcmp(a.id, p.id) && !due(now + ACK_DELAY_MS, a.at)) { a.at = now + ACK_DELAY_MS; s.lastAckAt = a.at; return EV_DUP; }
+        // acks of one message stay ACK_SPACING_MS apart on the air (digipeaters drop duplicates for 30 s): compare send times, not arrival
+        if (due(now + wait, s.lastAckAt + ACK_SPACING_MS)) { queueAck(p.from, p.id, now, wait); s.lastAckAt = now + wait; }
         return EV_DUP;
       }
-      seen.push_back({{}, {}, text, now, now + ACK_DELAY_MS});
+      seen.push_back({{}, {}, text, now, now + ackWait(p)});
       strcpy(seen.back().from, p.from); strcpy(seen.back().id, p.id);
       if (seen.size() > 60) seen.erase(seen.begin());
-      queueAck(p.from, p.id, now);
+      queueAck(p.from, p.id, now, ackWait(p));
     } else {                                                          // unnumbered: never acked; same text within the window is a repeat
       for (auto &s : seen) if (!strcmp(s.from, p.from) && !s.id[0] && s.text == text && (uint32_t)(now - s.firstAt) < DUP_WINDOW_MS) return EV_DUP;
       seen.push_back({{}, {}, text, now, 0}); strcpy(seen.back().from, p.from);
@@ -273,9 +296,10 @@ private:
     }
     changed = true;
   }
-  void queueAck(const char *to, const char *id, uint32_t now) {
+  static uint32_t ackWait(const Parsed &p) { return p.mayRepeat ? ACK_DELAY_RELAY_MS : ACK_DELAY_MS; }
+  void queueAck(const char *to, const char *id, uint32_t now, uint32_t wait) {
     for (auto &a : acks) if (!strcmp(a.to, to) && !strcmp(a.id, id)) return;
-    AckJob a{}; strncpy(a.to, to, 9); strncpy(a.id, id, 6); a.at = now + ACK_DELAY_MS; acks.push_back(a);
+    AckJob a{}; strncpy(a.to, to, 9); strncpy(a.id, id, 6); a.at = now + wait; acks.push_back(a);
   }
   bool hasOut(const char *from, const char *id) const { for (auto &x : m) if (x.out && !strcmp(x.peer, from) && !strcmp(x.id, id)) return true; return false; }
   bool settle(const char *from, const char *id, State to) {

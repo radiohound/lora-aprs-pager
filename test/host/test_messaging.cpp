@@ -124,9 +124,34 @@ int main() {
     TxItem it; A.nextTx(0, it); A.txDone(true, 0);
     std::string air = tnc2("K6ATV-6", "APZPGR", "WIDE1-1", it.info);
     expect(B.onRx(parse(air.c_str(), air.size()), 1000, 0, -50) == EV_NEW && std::string(B.m[0].text) == "ping", "B receives A's message");
-    TxItem ack; expect(B.nextTx(3000, ack) && ack.isAck, "B acks");
+    TxItem ack; expect(!B.nextTx(6900, ack), "A's path asks for a digipeater: B waits for the repeat");
+    expect(B.nextTx(7100, ack) && ack.isAck, "B acks");
     std::string air2 = tnc2("K6ATV-4", "APZPGR", "WIDE1-1", ack.info);
-    expect(A.onRx(parse(air2.c_str(), air2.size()), 5000, 0, -50) == EV_ACKED && A.m[0].state == S_ACKED, "A sees the ack and settles the message"); }
+    expect(A.onRx(parse(air2.c_str(), air2.size()), 9000, 0, -50) == EV_ACKED && A.m[0].state == S_ACKED, "A sees the ack and settles the message"); }
+
+  // ---- ack timing: do not talk over the digipeater that repeats the message ----
+  { auto R = [](const char *f) { return parse(f, strlen(f)).mayRepeat; };
+    expect(R("K6ATV-4>APX,WIDE1-1::K6ATV-6  :a{1") && R("K6ATV-4>APX,WIDE2-2::K6ATV-6  :a{1") && R("K6ATV-4>APX,N0DIG-3::K6ATV-6  :a{1"), "a repeat may come");
+    expect(!R("K6ATV-4>APX::K6ATV-6  :a{1") && !R("K6ATV-4>APX,N0DIG-3,WIDE1*::K6ATV-6  :a{1") && !R("K6ATV-4>APX,N0DIG-3*,WIDE2-1::K6ATV-6  :a{1"), "no path, or already repeated");
+    expect(!R("K6ATV-4>APX,WIDE1-0::K6ATV-6  :a{1") && !R("K6ATV-4>APX,TCPIP,NOGATE::K6ATV-6  :a{1") && !R("K6ATV-4>APX,qAO,RFONLY::K6ATV-6  :a{1"), "nothing left to repeat"); }
+  const char *DIRECT = "K6ATV-4>APX,WIDE1-1::K6ATV-6  :via{8", *RPT = "K6ATV-4>APX,N0DIG-10,WIDE1*::K6ATV-6  :via{8";
+  { Messenger M = mk(); uint32_t t = 100000; TxItem it;
+    M.onRx(parse(DIRECT, strlen(DIRECT)), t, 0, -90);
+    expect(!M.nextTx(t + 5900, it), "heard direct: not before 6 s");
+    expect(M.nextTx(t + 6100, it) && it.isAck, "then acked"); }
+  { Messenger M = mk(); uint32_t t = 100000; TxItem it;
+    M.onRx(parse(DIRECT, strlen(DIRECT)), t, 0, -90); expect(M.onRx(parse(RPT, strlen(RPT)), t + 3000, 0, -90) == EV_DUP && M.m.size() == 1, "the repeat shows once");
+    expect(!M.nextTx(t + 4400, it), "not on top of the repeat");
+    expect(M.nextTx(t + 4600, it) && it.isAck, "1.5 s after the repeat, without waiting out the 6 s");
+    M.txDone(true, t + 4600); expect(!M.nextTx(t + 20000, it), "one ack for the two copies");
+    M.onRx(parse(DIRECT, strlen(DIRECT)), t + 32000, 0, -90);             // the sender's retry, about 30 s after its first try
+    expect(!M.nextTx(t + 37900, it) && M.nextTx(t + 38100, it) && it.isAck, "a retry 32 s later is acked again"); }
+  { Messenger M = mk(); uint32_t t = 100000; TxItem it;
+    M.onRx(parse(DIRECT, strlen(DIRECT)), t, 0, -90); M.nextTx(t + 6100, it); M.txDone(true, t + 6100);
+    M.onRx(parse(RPT, strlen(RPT)), t + 9000, 0, -90); expect(!M.nextTx(t + 20000, it), "a late repeated copy right after our ack adds no second ack");
+    M.onRx(parse(DIRECT, strlen(DIRECT)), t + 30500, 0, -90); expect(M.nextTx(t + 36600, it) && it.isAck, "a retry 30.5 s after the first copy is not skipped"); }
+  { Messenger M = mk(); uint32_t t = 100000; TxItem it;
+    M.onRx(parse(RPT, strlen(RPT)), t, 0, -90); expect(M.nextTx(t + 1600, it) && it.isAck, "only heard repeated: acked after 1.5 s as before"); }
 
   // ---- signal strength is kept with a received message, and the saved-file layout did not change ----
   { Messenger M = mk(); M.onRx(P("K6ATV-4>X::K6ATV-6  :sig{1"), 0, 0, -97, (int)lround(-12.5 * 4));

@@ -138,6 +138,9 @@ the map, arrows pan, press recentres. Debounce/direction need testing on the rea
   aggressive for SF9-SF12 LoRa (my inference; no published LoRa guidance found): start around 30 s and double up to a cap
   (aprs.org message-issues.txt suggests 0, 15 s, 30 s, 1, 2, 4, 8, 16 min, then stop: take that shape but begin at 30 s), configurable, with the countdown to the next try shown; honour the 30 s duplicate window; an ack cancels retries; a rej stops them; a key stops retrying manually.
 - Receive: ack every copy of a numbered message (30 s apart), show it once; never ack unnumbered, group or bulletin messages.
+- Ack timing: after 1.5 s, but after 6 s if the message was heard straight from the sender with a path a digipeater may still act on (an ack
+  sent at once can collide with that repeat at the sender). A repeated copy arriving meanwhile brings the ack to 1.5 s after it. The 30 s
+  spacing is between ack send times, so a sender's retry about 30 s later is not skipped.
 - Queue persists across reboots. Path per message (default WIDE1-1, option direct).
 - Be polite on air: listen before talk where the radio supports it, rate limit, never ack bulletins.
 - Airtime estimate (my calculation, not measured): a 60-byte packet at SF12 / 125 kHz / CR 4/5 is roughly 2.5 s on air,
