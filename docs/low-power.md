@@ -130,6 +130,10 @@ diodes and partly powers it.** The chip then draws current from the pin instead 
   floating. Floating just that one pin took the "SD off" configuration from 47 mA to 33 mA. Cutting the SD rail *without* floating the
   chip-select saved nothing. The same applies to the first test of "panel sleep + SD off", which read no change: the panel saved about
   13 mA and the SD leak cost about 14 mA.
+* **The SD card also stops the radio.** They share the SPI bus. With the card's power off and CS floating, the radio stopped answering (error -20),
+  so beacons failed with the screen off. CS held high all the time works but leaks (above). The firmware drives CS high only while it talks to the
+  radio and waits 2 ms before each exchange; without that wait it still failed. Serial command `PX` repeats the test. So far confirmed with USB
+  connected; the run on battery and the current draw are still to be measured.
 * **GPS.** With `GPS_EN` low and the ESP32 still driving the serial lines, the GPS leak was about 28 mA. Floating GPIO 4, 12 and 13
   (permanently, as plain inputs) took the configuration from 34 mA to 6 mA.
 * **Radio.** Cutting `LORA_EN` made things *worse* by 18 mA (65 mA vs 47 mA), for the same reason: the SPI and control lines kept

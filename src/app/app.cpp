@@ -35,6 +35,8 @@ static void rxApply();
 #include "clock.h"
 #include "ubx.h"
 #include "ui_icons.h"
+#include <soc/gpio_struct.h>
+#include <soc/gpio_sig_map.h>
 #include "chase.h"
 #include "gpsduty.h"
 #include <esp_task_wdt.h>
@@ -49,6 +51,29 @@ static bool fbOk = false;
 
 // ---- LoRa APRS receive (433.775 MHz, SF12, BW125, CR4/5, private sync 0x12). It also transmits beacons and messages once a call sign is saved. ----
 static SX1262 *radio = nullptr;
+// The SD card shares the SPI bus with the radio. With the card's power off and its chip-select (CS) not driven high, the radio stops working
+// (shown by serial command PX: floating, pulled up or low all fail; high works). Driving CS high all the time costs about 14 mA (it leaks into
+// the unpowered card), so it is driven only while the radio is being talked to, and floats the rest of the time.
+static bool sdUnpowered = false;
+// The pause after driving CS high matters: with none the radio failed. In the PX test 0, 20 and 100 us failed; 500 us, 2 ms and 10 ms passed
+// every check and reset (one pager, indoors). 2 ms leaves a margin.
+static const uint32_t SD_SETTLE_US = 2000;
+static uint32_t sdSettleUs = SD_SETTLE_US;           // PX tries other values and puts this one back
+static bool sdParkLines = false;                    // test only (PX): also hold SCK and MOSI low between radio exchanges
+static uint32_t busSaved[2];                        // their pin routing, put back before each exchange
+static void busPark(bool park) {
+  const int pins[2] = {PIN_SCK, PIN_MOSI};
+  for (int i = 0; i < 2; i++) {
+    if (park) { busSaved[i] = GPIO.func_out_sel_cfg[pins[i]].val; ::pinMode(pins[i], OUTPUT); ::digitalWrite(pins[i], LOW); GPIO.func_out_sel_cfg[pins[i]].func_sel = SIG_GPIO_OUT_IDX; }
+    else GPIO.func_out_sel_cfg[pins[i]].val = busSaved[i];
+  }
+}
+class RadioBusHal : public ArduinoHal {
+public:
+  explicit RadioBusHal(SPIClass &spi) : ArduinoHal(spi) {}
+  void spiBeginTransaction() override { if (sdParkLines) busPark(false); if (sdUnpowered) { ::pinMode(PIN_SD_CS, OUTPUT); ::digitalWrite(PIN_SD_CS, HIGH); if (sdSettleUs) delayMicroseconds(sdSettleUs); } ArduinoHal::spiBeginTransaction(); }
+  void spiEndTransaction() override { ArduinoHal::spiEndTransaction(); if (sdUnpowered) ::pinMode(PIN_SD_CS, INPUT); if (sdParkLines) busPark(true); }
+};
 static volatile bool rxFlag = false;
 static void IRAM_ATTR onRx() { rxFlag = true; }
 static bool radioOk = false;
@@ -747,7 +772,7 @@ void setup() {
   delay(300);
   gpsHint();
   keys.begin();
-  radio = new SX1262(new Module(PIN_LORA_CS, PIN_LORA_IRQ, PIN_LORA_RST, PIN_LORA_BUSY, SPI));
+  radio = new SX1262(new Module(new RadioBusHal(SPI), PIN_LORA_CS, PIN_LORA_IRQ, PIN_LORA_RST, PIN_LORA_BUSY));
   if (radioSetup()) radioOk = true;
 
   pinMode(PIN_ROT_A, INPUT_PULLUP); pinMode(PIN_ROT_B, INPUT_PULLUP); pinMode(PIN_ROT_PRESS, INPUT_PULLUP);
@@ -1003,7 +1028,7 @@ static void powerApply() {
   // Waking: the SD card first, then the panel. After light sleep the panel's first sleep-out command, sent straight away, did not take; the same command
   // sent later (after the SD card was back) did. Going to sleep: panel first, then the SD card.
   if (!wSd && aSd) {
-    xp.output(XP_SD_EN, HIGH); pinMode(PIN_SD_CS, OUTPUT); digitalWrite(PIN_SD_CS, HIGH); delay(10);
+    sdUnpowered = false; xp.output(XP_SD_EN, HIGH); pinMode(PIN_SD_CS, OUTPUT); digitalWrite(PIN_SD_CS, HIGH); delay(10);
     bool ok = SD.begin(PIN_SD_CS, SPI, 20000000) || SD.begin(PIN_SD_CS, SPI, 4000000); plog('d', ok);
     aSd = false;
   }
@@ -1017,7 +1042,7 @@ static void powerApply() {
     }
     aPanel = wPanel; plog('p', wPanel, (int)(ESP.getFreeHeap() / 1024));
   }
-  if (wSd && !aSd) { SD.end(); xp.output(XP_SD_EN, LOW); pinMode(PIN_SD_CS, INPUT); aSd = true; }
+  if (wSd && !aSd) { SD.end(); xp.output(XP_SD_EN, LOW); pinMode(PIN_SD_CS, INPUT); sdUnpowered = true; aSd = true; }
 }
 static bool screenTouch() {
   if (screenState == 2 && asleepN >= 2) { asleepAvg = (int)(asleepSum / asleepN); asleepHave = true; }                                // returns true when the screen was off: the caller then ignores that key press
@@ -1365,6 +1390,65 @@ static void lightSleepOnce() {
   uint8_t ks = (digitalRead(PIN_ROT_A) << 1) | digitalRead(PIN_ROT_B);
   if (ks != kLast) { kLast = ks; screenTouch(); }                                            // the knob moved: wake the screen, the turn itself is ignored
 }
+// Development test (serial command PX): which part of switching the SD card off upsets the radio on the shared SPI bus? Takes the steps one
+// at a time and asks the radio to run a channel check after each (receive only, nothing is transmitted). Restores the card and radio.
+static bool pxRadio(const char *what) {
+  int okCount = 0, st = 0; uint32_t flags = 0; bool done = false;
+  for (int k = 0; k < 3; k++) {
+    st = radio->startChannelScan(); done = false;
+    if (st == RADIOLIB_ERR_NONE) { uint32_t t0 = millis(); while (millis() - t0 < 1500) { if (digitalRead(PIN_LORA_IRQ)) { done = true; break; } delay(2); } }
+    flags = radio->getIrqFlags();
+    if (st == RADIOLIB_ERR_NONE && done && (flags & (RADIOLIB_SX126X_IRQ_CAD_DONE | RADIOLIB_SX126X_IRQ_CAD_DETECTED))) okCount++;
+    delay(100); esp_task_wdt_reset();
+  }
+  Serial.printf("PX  %-52s radio %s (%d/3; start %d, done pin %d, flags 0x%04lx, busy %d)\n", what, okCount == 3 ? "OK  " : (okCount ? "FLAKY" : "FAIL"), okCount, st, done, (unsigned long)flags, digitalRead(PIN_LORA_BUSY));
+  return okCount == 3;
+}
+static void pxPower(bool on) { xp.output(XP_SD_EN, on ? HIGH : LOW); delay(150); esp_task_wdt_reset(); }
+static bool pxRestore() {                                    // card powered and mounted, radio set up again
+  if (sdParkLines) { sdParkLines = false; busPark(false); }
+  sdUnpowered = false; pinMode(PIN_SD_CS, OUTPUT); digitalWrite(PIN_SD_CS, HIGH); pxPower(true); delay(300); SD.end();
+  bool card = SD.begin(PIN_SD_CS, SPI, 20000000) || SD.begin(PIN_SD_CS, SPI, 4000000);
+  bool rad = radioSetup(); rxFlag = false; esp_task_wdt_reset();
+  Serial.printf("PX  -- restored: card mount %s, radio setup %s\n", card ? "ok" : "FAILED", rad ? "ok" : "FAILED");
+  return card && rad;
+}
+// The fix under test: card off, CS high only during radio exchanges, after a pause. Many checks, with the line left floating for different
+// lengths of time in between, then a radio reset (many exchanges back to back).
+static void pxSettle(uint32_t us) {
+  pxRestore();
+  SD.end(); xp.output(XP_SD_EN, LOW); pinMode(PIN_SD_CS, INPUT); sdSettleUs = us; sdUnpowered = true;
+  uint32_t t0 = millis(); while (millis() - t0 < 3000) { delay(20); esp_task_wdt_reset(); }                   // let the card's supply drain
+  static const uint32_t GAP[4] = {0, 100, 1000, 5000}; static const int N[4] = {10, 10, 5, 3};
+  int good = 0, all = 0; char line[96]; int at = 0;
+  for (int g = 0; g < 4; g++) {
+    int ok = 0;
+    for (int k = 0; k < N[g]; k++) {
+      uint32_t w = millis(); while (millis() - w < GAP[g]) { delay(10); esp_task_wdt_reset(); }
+      int st = radio->startChannelScan(); bool done = false;
+      if (st == RADIOLIB_ERR_NONE) { uint32_t c0 = millis(); while (millis() - c0 < 1500) { if (digitalRead(PIN_LORA_IRQ)) { done = true; break; } delay(2); } }
+      uint32_t fl = radio->getIrqFlags();
+      if (st == RADIOLIB_ERR_NONE && done && (fl & (RADIOLIB_SX126X_IRQ_CAD_DONE | RADIOLIB_SX126X_IRQ_CAD_DETECTED))) ok++;
+      esp_task_wdt_reset();
+    }
+    at += snprintf(line + at, sizeof line - at, "  gap %lu ms: %d/%d", (unsigned long)GAP[g], ok, N[g]); good += ok; all += N[g];
+  }
+  Serial.printf("PX pause %5lu us:%s\n", (unsigned long)us, line);
+  int resets = 0; for (int k = 0; k < 3; k++) { if (radioSetup()) resets++; esp_task_wdt_reset(); }
+  Serial.printf("PX pause %5lu us: radio reset %d/3 -> %s\n", (unsigned long)us, resets, (good == all && resets == 3) ? "ALL PASSED" : "failed");
+  sdSettleUs = SD_SETTLE_US;
+}
+static void pxRun() {
+  screenTouch();
+  Serial.println("PX start (2 to 4 minutes): card off, CS high only during exchanges, with a pause before each");
+  static const uint32_t PAUSE_US[6] = {0, 20, 100, 500, 2000, 10000};
+  for (int i = 0; i < 6; i++) pxSettle(PAUSE_US[i]);
+  pxRestore();
+  pxRadio("end: card powered and mounted");
+  rxFlag = false; rxApply(); aSd = false; lastActivity = millis(); dirty = true;
+  Serial.println("PX done");
+}
+
 void loop() {
   esp_task_wdt_reset(); pstage(5);
   plogRtc.autoOn = autoBeacon ? 1 : 0; if (millis() > 1800000UL) plogRtc.autoRestores = 0;
@@ -1449,6 +1533,7 @@ void loop() {
             Serial.printf("auto beacon %s, restored %d time(s) since the last 30 min stable run\n", autoBeacon ? "on" : "off", plogRtc.autoRestores); }
             for (int i = 0; i < n; i++) { PEv &e = plogBuf[(first + i) % 96]; Serial.printf("  %9lu ms  %c  %d %d\n", (unsigned long)e.ms, e.tag, e.a, e.b); }
           }
+          else if (cmd[1] == 'X') { if (radioOk) pxRun(); else Serial.println("PX: no radio"); }
           else if (cmd[1] == 'T') { cadForceTimeout = true; Serial.println("the next channel check will act stuck"); }
           else if (cmd[1] == 'L') { pwrSleep = cmd[2] == '1'; }
           else if (cmd[1] == 'A') {
