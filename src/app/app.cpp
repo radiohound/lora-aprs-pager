@@ -40,6 +40,7 @@ static void rxApply();
 #include "chase.h"
 #include "txbackoff.h"
 #include "repeater.h"
+#include "rsthist.h"
 #include "gpsduty.h"
 #include <esp_task_wdt.h>
 #include <esp_system.h>
@@ -103,6 +104,9 @@ static const uint8_t GPS_WAKE_BYTE = 0x00;
 static void gpsSendWake() { for (int i = 0; i < 4; i++) Serial1.write(GPS_WAKE_BYTE); }
 static void gpsHint();
 static void plogInit();
+static void rstHistBoot();
+static void rstHistAlive();
+static void rstHistPrint();
 static bool radioSetup();
 static bool plogRestoreAuto();                               // after a watchdog or crash restart: should auto beacon come back on?
 static void blogBeacon(char tag, int result);                // the beacon log and the GPS window log (PW prints both)
@@ -567,14 +571,28 @@ static void drawFullList(lgfx::LovyanGFX &D, int W, int H) {
 enum MenuAct { MA_NONE, MA_MESSAGES, MA_SETUP, MA_BEACON, MA_AUTO, MA_POWEROFF_ASK, MA_POWEROFF_YES, MA_NO, MA_CLOSE, MA_HELP, MA_FOLLOW_ME, MA_FOLLOW_STATION, MA_KEEP_ASK, MA_KEEP_YES, MA_KEEP_OFF };
 struct MainMenu { bool on = false; int sel = 0, n = 0; char label[9][32]; MenuAct act[9]; char title[34] = "Menu"; char info1[56] = "", info2[56] = "", info3[56] = ""; };
 static MainMenu mainMenu;
+static RstHist rstHist;                                          // restart history, kept in flash (rsthist.h)
+static void drawRestarts(lgfx::LovyanGFX &D) {
+  D.setTextColor(TFT_WHITE); D.setCursor(8, 28); D.printf("Starts: %u    crashes: %u    (newest first)", (unsigned)rstHist.starts, (unsigned)rstHist.crashes);
+  for (int i = 0; i < rstHist.count; i++) {
+    const RstRec &e = rstGet(rstHist, i); char when[20] = "time not set";
+    if (e.utc) { LocalTime t = clockLocal(e.utc, S.utcOffset, S.usDst); snprintf(when, sizeof when, "%02d/%02d %02d:%02d", t.month, t.day, t.hour, t.min); }
+    D.setTextColor(rstIsCrash(e.reason) ? TFT_RED : (e.reason == 9 ? TFT_YELLOW : TFT_WHITE));
+    D.setCursor(8, 44 + i * 15); D.printf("%-12s  %s", when, rstName(e.reason));
+    D.setTextColor(0xC618); D.setCursor(290, 44 + i * 15);
+    if (i < rstHist.count - 1 || rstHist.starts > 1) D.printf("ran %s%uh %02um", rstIsCrash(e.reason) ? "" : "at least ", e.ranMin / 60, e.ranMin % 60);
+    if (rstIsCrash(e.reason)) D.printf("  stage %u", e.stage);
+  }
+}
 static bool helpOn = false; static int helpPage = 0;       // Help screen: page 0 = keys, page 1 = QR code for the SD card guide
 static const char *HELP_URL = "https://github.com/radiohound/lora-aprs-pager";
 static void drawHelp(lgfx::LovyanGFX &D) {
   D.fillRect(0, 0, 480, 222, 0x0014); D.drawFastHLine(0, 20, 480, TFT_CYAN);
-  D.setTextSize(1); D.setTextColor(TFT_CYAN); D.setCursor(6, 6); D.print(helpPage == 0 ? "HELP  1: keys" : helpPage == 1 ? "HELP  2: building the map SD card" : "HELP  3: power test");
+  D.setTextSize(1); D.setTextColor(TFT_CYAN); D.setCursor(6, 6); D.print(helpPage == 0 ? "HELP  1: keys" : helpPage == 1 ? "HELP  2: building the map SD card" : "HELP  3: restart history");
   D.setTextColor(0xC618); D.setCursor(336, 6); D.print("turn=page press=close");
   D.setTextColor(TFT_WHITE);
-  if (helpPage == 0) {
+  if (helpPage == 2) drawRestarts(D);
+  else if (helpPage == 0) {
     static const char *L[] = {
       "Backspace   menu: follow, keep screen on, setup, power off",
       "M           messages          Enter   phone setup",
@@ -773,6 +791,7 @@ void setup() {
   M.setCall(S.call); msgLoad(); M.restoreTimers(millis()); M.startIds(esp_random());
   Wire.begin(PIN_SDA, PIN_SCL, 400000);
   rtcRead();                                // the time the RTC chip kept, until GPS gives a better one
+  rstHistBoot();                            // after the clock, so the record has the time
   bool xpOk = xp.begin(ADDR_XL9555);
   if (xpOk) {
     const uint8_t on[] = {XP_LORA_EN, XP_GPS_EN, XP_GPS_RST, XP_KB_EN, XP_KB_RST, XP_SD_EN};   // header rail (XP_GPIO_EN) stays off: nothing uses it
@@ -815,6 +834,7 @@ void setup() {
   if (S.autoAtBoot) { autoBeacon = true; beacon.start(millis()); }
   else if (plogRestoreAuto()) { autoBeacon = true; beacon.start(millis()); }
   attachInterrupt(PIN_ROT_A, knobIsr, CHANGE); attachInterrupt(PIN_ROT_B, knobIsr, CHANGE);
+  if (rstIsCrash((int)esp_reset_reason())) say("Restarted after a crash: see Help, page 3");
   render();
 }
 
@@ -962,8 +982,31 @@ extern "C" void IRAM_ATTR __wrap_esp_panic_handler(panic_info_t *info) {
 static inline void pstage(uint32_t st) { plogRtc.stage = st; plogRtc.stageMs = millis(); }   // 1 arming wake sources, 2 about to sleep, 3 woke, 4 pins restored, 5 loop pass started, 6 received packets, 7 screen/GPS duty, 8 keyboard check, 9 auto beacon, 10 message queue (19-24 inside a transmission: 19 beacon start, 20 listening, 21 listened, 22 transmitting, 23 sent, 24 done), 11 message screens, 12 redraw
 static bool plogSleepOpen = false; static uint32_t plogTimerWakes = 0;
 static void plog(char tag, int a = 0, int b = 0) { PEv &e = plogBuf[plogN % 96]; e.ms = millis(); e.tag = tag; e.a = a; e.b = b; plogN++; plogSleepOpen = (tag == 's'); }
+static uint32_t bootPrevStage = 0, bootPrevMs = 0;          // from RTC memory, for the restart history: valid after a crash restart
+// Every start adds a record to flash. How long the run before lasted: after a crash from RTC memory; otherwise from the note this run
+// leaves in flash after 1 minute and then every 10 (so "at least").
+static void rstHistBoot() {
+  Preferences p; p.begin("pgr-rst", false);
+  if (p.getBytes("hist", &rstHist, sizeof rstHist) != sizeof rstHist || !rstValid(rstHist)) rstClear(rstHist);
+  int why = (int)esp_reset_reason(); uint32_t ran = p.getUShort("ran", 0);
+  if (rstIsCrash(why) && bootPrevMs / 60000UL > ran) ran = bootPrevMs / 60000UL;
+  rstAdd(rstHist, utcNow(), why, rstIsCrash(why) ? (int)bootPrevStage : 0, ran);
+  p.putBytes("hist", &rstHist, sizeof rstHist); p.putUShort("ran", 0); p.end();
+}
+static void rstHistAlive() {                                  // every pass
+  static uint32_t next = 60000UL;
+  if (millis() < next) return;
+  Preferences p; p.begin("pgr-rst", false); p.putUShort("ran", (uint16_t)std::min<uint32_t>(millis() / 60000UL, 65535)); p.end();
+  next = millis() + 600000UL;
+}
+static void rstHistPrint() {
+  Serial.printf("restart history (flash): %u starts, %u crashes\n", (unsigned)rstHist.starts, (unsigned)rstHist.crashes);
+  for (int i = 0; i < rstHist.count; i++) { const RstRec &e = rstGet(rstHist, i); LocalTime c = clockBreak(e.utc);
+    Serial.printf("  %02d/%02d %02d:%02d UTC  reason %u %s, stage %u, run before %u min\n", c.month, c.day, c.hour, c.min, e.reason, rstName(e.reason), e.stage, e.ranMin); }
+}
 static void plogInit() {                                    // at start-up: keep the log if the RTC memory still holds one, then note why we restarted
   if (plogRtc.magic != 0x504C4F4D || plogRtc.n < 0) { memset(&plogRtc, 0, sizeof plogRtc); plogRtc.magic = 0x504C4F4D; }
+  bootPrevStage = plogRtc.stage; bootPrevMs = plogRtc.stageMs;
   { PRst &r = plogRtc.rst[plogRtc.rstN % 8]; r.reason = (int)esp_reset_reason(); r.stage = (int)plogRtc.stage; r.upMs = plogRtc.stageMs; r.bootMs = 0; plogRtc.rstN++; }   // never overwritten by ordinary entries
   plog('R', (int)esp_reset_reason(), (int)plogRtc.stage);
 }
@@ -1380,7 +1423,7 @@ static void openMainMenu() {
   else if (nOrd && selCall[0]) { char t[32]; snprintf(t, sizeof t, "Follow %s", selCall); mmAdd(t, MA_FOLLOW_STATION); }     // the station selected in the list
   mmAdd(chase.keepScreen ? "Screen is kept on: turn off" : "Keep screen on...", chase.keepScreen ? MA_KEEP_OFF : MA_KEEP_ASK);
   mmAdd(autoBeacon ? "Auto-beacon is ON: turn off" : "Auto-beacon is OFF: turn on", MA_AUTO);
-  mmAdd("Help: keys and map card", MA_HELP); mmAdd("Power off", MA_POWEROFF_ASK); mmAdd("Close menu", MA_CLOSE);
+  mmAdd("Help, restart history", MA_HELP); mmAdd("Power off", MA_POWEROFF_ASK); mmAdd("Close menu", MA_CLOSE);
   dirty = true;
 }
 static void mainMenuAct(MenuAct a) {
@@ -1524,6 +1567,7 @@ static void pxRun() {
 
 void loop() {
   esp_task_wdt_reset(); pstage(5);
+  rstHistAlive();
   plogRtc.autoOn = autoBeacon ? 1 : 0; if (millis() > 1800000UL) plogRtc.autoRestores = 0;
   if (root == "") { delay(1000); return; }
   if (pwrSleep && screenState == 2 && !setupMode && !demoMode && radioOk && millis() - lastGpsByte > 400 && (gpsSleeping || !S.gpsSleep || !pwrGps)) lightSleepOnce();
@@ -1562,7 +1606,7 @@ void loop() {
         } else if (cmd[0] == 'V') { int v = atoi(cmd + 1); if (v >= 0 && v <= 3) { stView = v; if (stView != 0 && mode == M_LIST) mode = M_PANX; dirty = true; } }
         else if (cmd[0] == 'C') { strncpy(selCall, cmd + 1, 9); selCall[9] = 0; lastKnobAt = millis(); dirty = true; }
         else if (cmd[0] == 'X') { ui.close(); mainMenu.on = false; helpOn = false; dirty = true; }
-        else if (cmd[0] == 'H') { helpOn = true; helpPage = atoi(cmd + 1) ? 1 : 0; dirty = true; }
+        else if (cmd[0] == 'H') { helpOn = true; helpPage = constrain(atoi(cmd + 1), 0, 2); dirty = true; }
         else if (cmd[0] == 'D') { double la, lo; if (sscanf(cmd + 1, "%lf,%lf", &la, &lo) == 2) { loadDemo(la, lo); clat = la; clon = lo; dirty = true; Serial.println("demo mode on: simulated stations, nothing is transmitted until RST"); } }
         else if (cmd[0] == 'P') {
           if (cmd[1] == 'S') { pwrSd = cmd[2] == '1'; }
@@ -1603,6 +1647,7 @@ void loop() {
             Serial.printf(" (processor woken by the sensor %lu times)", (unsigned long)motionPinWakesTotal());
             for (int k = 0; k < MOT_KINDS; k++) Serial.printf(" %s %lu%s,", MOT_NAME[k], (unsigned long)motionCount[k], motionAvail[k] ? "" : " (n/a)");
             Serial.println();
+            rstHistPrint();
             Serial.printf("auto beacon %s, restored %d time(s) since the last 30 min stable run\n", autoBeacon ? "on" : "off", plogRtc.autoRestores); }
             for (int i = 0; i < n; i++) { PEv &e = plogBuf[(first + i) % 96]; Serial.printf("  %9lu ms  %c  %d %d\n", (unsigned long)e.ms, e.tag, e.a, e.b); }
           }
@@ -1696,7 +1741,7 @@ void loop() {
   if (uint8_t e = keyFiltered()) {
     Serial.printf("key raw=%u %s char='%c' ui=%d\n", e & 0x7F, (e & 0x80) ? "down" : "up", keyLookup(e & 0x7F).ch ? keyLookup(e & 0x7F).ch : '?', (int)ui.scr);
     if (ui.active()) { ui.key(e & 0x7F, e & 0x80); if (!ui.active()) dirty = true; }
-    else if (helpOn) { if (e & 0x80) { if ((e & 0x7F) == KEY_ENTER || (e & 0x7F) == KEY_BACKSPACE) helpOn = false; else helpPage = (helpPage + 1) % 2; dirty = true; } }
+    else if (helpOn) { if (e & 0x80) { if ((e & 0x7F) == KEY_ENTER || (e & 0x7F) == KEY_BACKSPACE) helpOn = false; else helpPage = (helpPage + 1) % 3; dirty = true; } }
     else if (mainMenu.on) {
       if (e & 0x80) { if ((e & 0x7F) == KEY_ENTER) mainMenuAct(mainMenu.act[mainMenu.sel]); else if ((e & 0x7F) == KEY_BACKSPACE) { mainMenu.on = false; dirty = true; } }
     }
@@ -1728,7 +1773,7 @@ void loop() {
 
   int32_t d; noInterrupts(); d = knobSteps; knobSteps = 0; interrupts();
   if (d && screenTouch()) d = 0;
-  if (d && helpOn) { helpPage = (helpPage + 1) % 2; haptic.play(H_TICK); dirty = true; }
+  if (d && helpOn) { helpPage = (helpPage + (d > 0 ? 1 : 2)) % 3; haptic.play(H_TICK); dirty = true; }
   else if (d && mainMenu.on) { mainMenu.sel = constrain(mainMenu.sel + (d > 0 ? -1 : 1), 0, mainMenu.n - 1); haptic.play(H_TICK); dirty = true; }
   else if (d && ui.active()) { for (int i = 0, n = abs(d); i < n; i++) ui.knob(d > 0 ? 1 : -1); haptic.play(H_TICK); }
   else if (d) {

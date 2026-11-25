@@ -95,6 +95,10 @@ zooming does not. To follow a moving station instead (a balloon, another vehicle
 Backspace menu; the top row then shows its distance and bearing from you and how long ago it was heard. It moves only when a new position from it is
 heard. The same menu goes back to following you.
 
+**Restart history** (Backspace menu, "Help, restart history", third page): the last ten starts with their time, reason (crashes in red) and how
+long the run before lasted, plus totals. It is kept in flash, so the RST button and a flat battery do not erase it. This chip reports the RST
+button and a power-on the same way.
+
 **Keep screen on** (Backspace menu; the confirmation starts on "No"): the screen does not dim or switch off, which uses much more battery, and a
 padlock shows on the map. It is a separate choice from what the map follows, and is always off after a restart.
 
