@@ -94,6 +94,10 @@ struct Station { char call[10]; double lat, lon; char table, sym; uint32_t heard
                  uint16_t count; char raw[121], path[40], via[10], comment[44]; };   // raw = the last packet as text; via = the digipeater that repeated it ("" = heard directly)
 static Station stations[48];
 static uint32_t utcNow();
+// Wakes the receiver from backup: a low level on its receive line. A 0x00 byte holds the line low for 9 bit times, 0xFF for only 1. With 0xFF
+// many wake-ups went unanswered and needed several retries; PW's GPS window log shows how many each search needs now.
+static const uint8_t GPS_WAKE_BYTE = 0x00;
+static void gpsSendWake() { for (int i = 0; i < 4; i++) Serial1.write(GPS_WAKE_BYTE); }
 static void gpsHint();
 static void plogInit();
 static bool radioSetup();
@@ -768,7 +772,7 @@ void setup() {
 
   // GPS on Serial1 (38400 baud), keyboard, and the radio (receive only)
   Serial1.begin(GPS_BAUD, SERIAL_8N1, PIN_GPS_RX, PIN_GPS_TX);
-  for (int i = 0; i < 4; i++) Serial1.write((uint8_t)0xFF);   // wake the GPS if a restart caught it in backup mode (harmless if it is awake)
+  gpsSendWake();   // wake the GPS if a restart caught it in backup mode (harmless if it is awake)
   delay(300);
   gpsHint();
   keys.begin();
@@ -987,7 +991,7 @@ static void gpsBackup(bool gotFix) {
 }
 static void gpsWake() {
   Serial1.begin(GPS_BAUD, SERIAL_8N1, PIN_GPS_RX, PIN_GPS_TX);
-  for (int i = 0; i < 4; i++) Serial1.write((uint8_t)0xFF);
+  gpsSendWake();
   gpsSleeping = false; gpsOnAt = millis(); gpsEpochAtOn = gps.fix.epoch; gpsWinBytes = 0; plog('g');
   gpsAwaiting = true; gpsSentAt = gpsOnAt; gpsRewakes = 0; gpsFirstDataMs = 0;
 }
@@ -998,7 +1002,7 @@ static void gpsWakeCheck() {                                // every pass, scree
   GpsRewake r = gpsRewakeStep(now - gpsSentAt, gpsWinBytes, gpsRewakes);
   if (r == GPS_WAIT) return;
   if (r == GPS_REOPEN_AND_SEND) { Serial1.end(); delay(5); Serial1.begin(GPS_BAUD, SERIAL_8N1, PIN_GPS_RX, PIN_GPS_TX); }
-  for (int i = 0; i < 4; i++) Serial1.write((uint8_t)0xFF);
+  gpsSendWake();
   gpsRewakes++; gpsSentAt = now;
 }
 static void gpsDuty() {                                     // called every pass while the screen is off
