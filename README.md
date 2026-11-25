@@ -84,10 +84,13 @@ The rotary knob works everywhere on its own; the keyboard types text and gives s
 | `Enter` | phone setup |
 | `P` | send a screenshot over USB (with `tools/screenshot.py`) |
 
-**Chase mode** (for following a balloon or another moving station): Backspace menu, "Chase mode...", then "Follow me" or "Follow <the selected station>"
-(the confirmation starts on "No"). The screen stays on and does not dim, which uses much more battery, and a padlock shows on the map. Panning or
-scrolling pauses following for 15 seconds; zooming does not. A followed station moves only when a new position from it is heard; the top row shows its
-distance and bearing from you and how long ago it was heard. Turn it off from the same menu; it is always off after a restart.
+**Following:** like a car navigator, the map follows your own position once there is a GPS fix. Panning or scrolling pauses it for 15 seconds;
+zooming does not. To follow a moving station instead (a balloon, another vehicle), select it in the list and choose "Follow <station>" in the
+Backspace menu; the top row then shows its distance and bearing from you and how long ago it was heard. It moves only when a new position from it is
+heard. The same menu goes back to following you.
+
+**Keep screen on** (Backspace menu; the confirmation starts on "No"): the screen does not dim or switch off, which uses much more battery, and a
+padlock shows on the map. It is a separate choice from what the map follows, and is always off after a restart.
 
 **Main menu** (Backspace on the map): turn = move, press = choose, long press or Backspace = close.
 

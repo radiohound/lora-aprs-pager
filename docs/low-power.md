@@ -166,6 +166,9 @@ Measured, no change beyond noise:
 * **Position and time hint at boot:** the last good fix (saved to flash after a move of 3 km or more, at most every 10 minutes) and the
   RTC time are sent as `UBX-MGA-INI-POS_LLH` and `UBX-MGA-INI-TIME_UTC`. They shorten the first fix after a cold start. The M10's backup
   supply keeps satellite data through normal operation, so this mostly helps after the pager has been fully off.
+* **Motion wake** (setting "Wake the GPS when the pager moves"): the BHI260AP's tilt, significant-motion and step reports cut the long sleep
+  short. Tested walking: the GPS woke as the pager was picked up. While the sensor is quiet, a GPS position change under 150 m counts as wander,
+  not movement (an indoor position moved 40 to 48 m with the pager lying still). Driving is not yet tested; the 5 minute check while still stays.
 * **A wake-up can go unheard.** In one run, every second search or so got no characters at all from the receiver for its whole length. The
   firmware now checks that data arrives after a wake-up and wakes the receiver again if not (reopening the serial port from the third try). The
   cause is not known yet; `PW` shows how many retries each search needed.

@@ -107,6 +107,8 @@ static bool radioSetup();
 static bool plogRestoreAuto();                               // after a watchdog or crash restart: should auto beacon come back on?
 static void blogBeacon(char tag, int result);                // the beacon log and the GPS window log (PW prints both)
 static void blogGpsWindow(bool gotFix, uint32_t awakeMs);
+static uint32_t motionWakesTotal();
+static uint32_t motionPinWakesTotal();
 static void gpsPosSave();                           // the clock, defined further down
 static char lastHeardCall[10] = "";                 // the station heard most recently, and when (the full list lights it up)
 static uint32_t lastHeardAt = 0, lastKnobAt = 0;      // lastKnobAt: when the knob last moved in the full list (it stops following new packets for a while)
@@ -303,7 +305,7 @@ static const char *MODE_NAME[] = {"ZOOM", "PAN W-E", "PAN N-S", "STATIONS"};
 static int stView = 0;
 static bool sortByDistance = true;          // S key: nearest first, or most recently heard first
 static char selCall[10] = "";               // selected station (kept by call sign so it survives re-sorting)
-static Chase chase;                          // chase mode (chase.h): off after every restart
+static Chase chase;                          // what the map follows (me unless a station is chosen) and "keep screen on" (chase.h)
 static const int LIST_W = 130;
 // The four views of the L key, named: shown as a pop-up when you switch and permanently in the top line.
 //   LIST+MAP      list of heard stations on the left, map on the right, station icons on the map
@@ -562,8 +564,8 @@ static void drawFullList(lgfx::LovyanGFX &D, int W, int H) {
 }
 
 // ---- Main menu (Backspace on the map): knob turn = move, press = choose, long press or Backspace = close ----
-enum MenuAct { MA_NONE, MA_MESSAGES, MA_SETUP, MA_BEACON, MA_AUTO, MA_POWEROFF_ASK, MA_POWEROFF_YES, MA_NO, MA_CLOSE, MA_HELP, MA_CHASE_ASK, MA_CHASE_ME, MA_CHASE_STATION, MA_CHASE_OFF };
-struct MainMenu { bool on = false; int sel = 0, n = 0; char label[8][32]; MenuAct act[8]; char title[34] = "Menu"; char info1[56] = "", info2[56] = "", info3[56] = ""; };
+enum MenuAct { MA_NONE, MA_MESSAGES, MA_SETUP, MA_BEACON, MA_AUTO, MA_POWEROFF_ASK, MA_POWEROFF_YES, MA_NO, MA_CLOSE, MA_HELP, MA_FOLLOW_ME, MA_FOLLOW_STATION, MA_KEEP_ASK, MA_KEEP_YES, MA_KEEP_OFF };
+struct MainMenu { bool on = false; int sel = 0, n = 0; char label[9][32]; MenuAct act[9]; char title[34] = "Menu"; char info1[56] = "", info2[56] = "", info3[56] = ""; };
 static MainMenu mainMenu;
 static bool helpOn = false; static int helpPage = 0;       // Help screen: page 0 = keys, page 1 = QR code for the SD card guide
 static const char *HELP_URL = "https://github.com/radiohound/lora-aprs-pager";
@@ -574,7 +576,7 @@ static void drawHelp(lgfx::LovyanGFX &D) {
   D.setTextColor(TFT_WHITE);
   if (helpPage == 0) {
     static const char *L[] = {
-      "Backspace   menu: chase mode, beacon, setup, power off",
+      "Backspace   menu: follow, keep screen on, setup, power off",
       "M           messages          Enter   phone setup",
       "L           next view: list + map, map, map only, full list",
       "S           list order: nearest first or newest first",
@@ -602,10 +604,10 @@ static void drawHelp(lgfx::LovyanGFX &D) {
     D.setCursor(230, 196); D.print("lora-aprs-pager");
   }
 }
-static void mmAdd(const char *t, MenuAct a) { if (mainMenu.n < 8) { strncpy(mainMenu.label[mainMenu.n], t, 31); mainMenu.label[mainMenu.n][31] = 0; mainMenu.act[mainMenu.n++] = a; } }
+static void mmAdd(const char *t, MenuAct a) { if (mainMenu.n < 9) { strncpy(mainMenu.label[mainMenu.n], t, 31); mainMenu.label[mainMenu.n][31] = 0; mainMenu.act[mainMenu.n++] = a; } }
 static void drawMainMenu(lgfx::LovyanGFX &D) {
   bool info = mainMenu.info1[0] != 0; int top = info ? (mainMenu.info3[0] ? 58 : 48) : 22;
-  int h = top + 4 + mainMenu.n * 18, w = info ? 340 : 260, x = (480 - w) / 2, y = (222 - h) / 2;
+  int h = top + 4 + mainMenu.n * 17, w = info ? 340 : 260, x = (480 - w) / 2, y = (222 - h) / 2;
   D.fillRect(x - 2, y - 2, w + 4, h + 4, TFT_WHITE); D.fillRect(x, y, w, h, TFT_BLACK);
   D.fillRect(x, y, w, top - 3, 0x0014);                          // the heading sits on a dark blue band, with a line under it before the choices
   D.fillRect(x, y + top - 3, w, 2, TFT_CYAN);
@@ -613,7 +615,7 @@ static void drawMainMenu(lgfx::LovyanGFX &D) {
   if (info) { D.setTextColor(TFT_WHITE); D.setCursor(x + 8, y + 19); D.print(mainMenu.info1); D.setCursor(x + 8, y + 31); D.print(mainMenu.info2);
                 if (mainMenu.info3[0]) { D.setTextColor(0xC618); D.setCursor(x + 8, y + 43); D.print(mainMenu.info3); } }
   for (int i = 0; i < mainMenu.n; i++) {
-    int yy = y + top + i * 18; bool sel = i == mainMenu.sel;
+    int yy = y + top + i * 17; bool sel = i == mainMenu.sel;
     D.fillRect(x + 2, yy, w - 4, 16, sel ? TFT_YELLOW : TFT_BLACK);
     D.setTextColor(sel ? TFT_BLACK : TFT_WHITE); D.setCursor(x + 10, yy + 4); D.print(mainMenu.label[i]);
   }
@@ -692,11 +694,11 @@ static void render() {
       hasIcon[i] = icon;
       if (!icon) { D.fillCircle(mk[i].ix, mk[i].iy, 4, TFT_BLACK); D.fillCircle(mk[i].ix, mk[i].iy, 3, TFT_YELLOW); }      // no icon for this code: plain dot
       if (isSel) D.drawCircle(mk[i].ix, mk[i].iy, icon ? 15 : 8, TFT_WHITE);
-      if (chase.on && strcmp(mk[i].st->call, chase.call) == 0) { D.drawCircle(mk[i].ix, mk[i].iy, 17, TFT_RED); D.drawCircle(mk[i].ix, mk[i].iy, 18, TFT_RED); }   // the one being chased
+      if (!chase.followingMe() && strcmp(mk[i].st->call, chase.call) == 0) { D.drawCircle(mk[i].ix, mk[i].iy, 17, TFT_RED); D.drawCircle(mk[i].ix, mk[i].iy, 18, TFT_RED); }   // the one being chased
     }
     for (int i = 0; i < nm; i++) {
       int w = 6 * (int)strlen(mk[i].st->call), off = hasIcon[i] ? 14 : 6, x = mk[i].ix + off, y = mk[i].iy - 4;   // x, y: where the text starts
-      if (x + w + 2 > (y < (chase.on ? ICON_COL_BOTTOM + 28 : ICON_COL_BOTTOM) ? W - ICON_COL_W : W)) x = mk[i].ix - off - w - 1;                                    // no room on the right: put it on the left
+      if (x + w + 2 > (y < (chase.keepScreen ? ICON_COL_BOTTOM + 28 : ICON_COL_BOTTOM) ? W - ICON_COL_W : W)) x = mk[i].ix - off - w - 1;                                    // no room on the right: put it on the left
       for (int tries = 0; tries < 8; tries++) {                                          // slide down until the box overlaps no other label
         bool hit = false;
         for (int k = 0; k < nl; k++) if (x - 2 < lx[k] + lw[k] && lx[k] < x - 2 + w + 3 && y - 2 < ly[k] + 11 && ly[k] < y - 2 + 11) { hit = true; break; }
@@ -720,10 +722,9 @@ static void render() {
   D.setTextColor(TFT_WHITE, TFT_BLACK); D.setTextSize(1);
   if (notice && millis() < noticeUntil) { D.setCursor(x0 + 2, 2); D.printf(" %s ", notice); }     // the top row is only used for passing notices
   else if (demoMode) { D.setCursor(x0 + 2, 2); D.print(" DEMO MODE "); }
-  else if (chase.on) {
+  else if (!chase.followingMe()) {                          // following me is normal and needs no words
     char t[72];
-    if (chase.followingMe()) snprintf(t, sizeof t, "FOLLOW ME%s", gps.fix.valid ? "" : "  no GPS fix");
-    else if (!chase.have) snprintf(t, sizeof t, "FOLLOW %s  no position yet", chase.call);
+    if (!chase.have) snprintf(t, sizeof t, "FOLLOW %s  no position yet", chase.call);
     else {
       char age[8]; geoFmtAge(age, sizeof age, (millis() - chase.heard) / 1000);
       if (gps.fix.valid) { char ds[10]; geoFmtDist(ds, sizeof ds, geoDistKm(gps.fix.lat, gps.fix.lon, chase.lat, chase.lon)); double b = geoBearing(gps.fix.lat, gps.fix.lon, chase.lat, chase.lon);
@@ -732,7 +733,7 @@ static void render() {
     }
     D.setCursor(x0 + 2, 2); D.printf(" %s%s ", t, chase.paused ? "  PAUSED" : "");
   }
-  if (chase.on) drawUiIcon(D, UI_LOCK, W - ICON_COL_W / 2, 164);
+  if (chase.keepScreen) drawUiIcon(D, UI_LOCK, W - ICON_COL_W / 2, 164);
   {
     int ix = W - ICON_COL_W / 2;
     drawUiIcon(D, gps.fix.valid ? UI_GPS_FIX : UI_GPS_NONE, ix, 33);
@@ -931,15 +932,17 @@ struct PEv { uint32_t ms; char tag; int a, b; };
 // 5 interrupt watchdog, 6 task watchdog, 9 brown-out).
 struct BEv { uint32_t ms, utc; char tag; uint8_t a; uint16_t b; uint32_t c; uint16_t d, e; };
 static const int BLOG_N = 128, GLOG_N = 96;
+struct GInfo { uint8_t mot[4]; uint16_t movedM, nextS; };     // beside each GPS window entry: motion reports since the previous one (tilt, significant,
+                                                             // steps, motion detect), metres from the previous fix (65535 = nothing to compare), sleep chosen
 struct PRst { uint32_t bootMs, upMs; int reason, stage; };                       // upMs: how long the run that ended had been up; stage: the code stage it was in
-struct PLogStore { uint32_t magic; int n; PEv buf[96]; uint32_t stage, stageMs, beats; int pins; PRst rst[8]; int rstN; uint32_t gpsWakes; uint32_t panics, pPc, pA0, pSp, pCore, pExc, pMs, pStack[8]; uint32_t cadTimeouts, cadMs, cadIrq; int cadStart, cadBusy, cadReinit, autoOn, autoRestores; BEv blog[BLOG_N], glog[GLOG_N]; int bN, gN; uint32_t bSent, bBusy, bFail, bNoFix, gFix, gNoFix; };   // stage: where the code was when the last marker was written
+struct PLogStore { uint32_t magic; int n; PEv buf[96]; uint32_t stage, stageMs, beats; int pins; PRst rst[8]; int rstN; uint32_t gpsWakes; uint32_t panics, pPc, pA0, pSp, pCore, pExc, pMs, pStack[8]; uint32_t cadTimeouts, cadMs, cadIrq; int cadStart, cadBusy, cadReinit, autoOn, autoRestores; BEv blog[BLOG_N], glog[GLOG_N]; int bN, gN; uint32_t bSent, bBusy, bFail, bNoFix, gFix, gNoFix; GInfo ginfo[GLOG_N]; };   // stage: where the code was when the last marker was written
 static RTC_NOINIT_ATTR PLogStore plogRtc;
 // What the chip was doing when a watchdog or crash reset hit: the panic handler is wrapped (link option -Wl,--wrap=esp_panic_handler in platformio.ini) so the
 // interrupted program counter, return address, stack pointer and a few code addresses found on the stack go into RTC memory before the normal handler runs.
 // Serial command PW prints them; look the addresses up with the toolchain's addr2line against the matching firmware.elf.
 extern "C" void __real_esp_panic_handler(panic_info_t *info);
 extern "C" void IRAM_ATTR __wrap_esp_panic_handler(panic_info_t *info) {
-  if (info && plogRtc.magic == 0x504C4F4C) {
+  if (info && plogRtc.magic == 0x504C4F4D) {
     const uint32_t *f = (const uint32_t *)info->frame;
     plogRtc.panics++; plogRtc.pCore = info->core; plogRtc.pExc = (uint32_t)info->exception; plogRtc.pMs = millis();
     plogRtc.pPc = (uint32_t)(uintptr_t)info->addr;
@@ -960,12 +963,12 @@ static inline void pstage(uint32_t st) { plogRtc.stage = st; plogRtc.stageMs = m
 static bool plogSleepOpen = false; static uint32_t plogTimerWakes = 0;
 static void plog(char tag, int a = 0, int b = 0) { PEv &e = plogBuf[plogN % 96]; e.ms = millis(); e.tag = tag; e.a = a; e.b = b; plogN++; plogSleepOpen = (tag == 's'); }
 static void plogInit() {                                    // at start-up: keep the log if the RTC memory still holds one, then note why we restarted
-  if (plogRtc.magic != 0x504C4F4C || plogRtc.n < 0) { memset(&plogRtc, 0, sizeof plogRtc); plogRtc.magic = 0x504C4F4C; }
+  if (plogRtc.magic != 0x504C4F4D || plogRtc.n < 0) { memset(&plogRtc, 0, sizeof plogRtc); plogRtc.magic = 0x504C4F4D; }
   { PRst &r = plogRtc.rst[plogRtc.rstN % 8]; r.reason = (int)esp_reset_reason(); r.stage = (int)plogRtc.stage; r.upMs = plogRtc.stageMs; r.bootMs = 0; plogRtc.rstN++; }   // never overwritten by ordinary entries
   plog('R', (int)esp_reset_reason(), (int)plogRtc.stage);
 }
 // Beacon log: 'B' a beacon was tried (a: 0 sent, 1 channel busy, 2 radio failed; b: satellites), 'N' one was due or asked for with no GPS fix
-// (a: 1 = by auto beacon), 'F' the first fix since this start (b: satellites). GPS log, one entry per wake window while the screen is off:
+// (a: 1 = by auto beacon), 'M' a movement woke the GPS from its long sleep (a: 1 tilt, 2 significant motion, 4 step, 8 motion detect, 16 any motion, added), 'F' the first fix since this start (b: satellites). GPS log, one entry per wake window while the screen is off:
 // 'W' (a: 1 = fresh fix, 0 = gave up; b: seconds awake; third number: characters received from the GPS, 0 = it sent nothing; fourth: extra wake-ups needed; fifth: ms until data arrived, 0 = none seen). Kept apart from the event log so its routine entries cannot push these out.
 static void blogPut(BEv *ring, int size, int &n, char tag, int a, int b) { BEv &e = ring[n % size]; e.ms = millis(); e.utc = utcNow(); e.tag = tag; e.a = (uint8_t)a; e.b = (uint16_t)b; e.c = tag == 'W' ? gpsWinBytes : 0; e.d = 0; e.e = 0; n++; }
 static void blogBeacon(char tag, int a) {
@@ -973,6 +976,7 @@ static void blogBeacon(char tag, int a) {
   else if (tag == 'N') plogRtc.bNoFix++;
   blogPut(plogRtc.blog, BLOG_N, plogRtc.bN, tag, a, gps.fix.sats);
 }
+static void gpsWinInfo(int moved, uint32_t nextMs);          // fills in the GInfo beside the newest GPS window entry
 static void gpsWinLogWake(struct BEv &e);                  // fills in this wake-up's retry count and time to first data
 static void blogGpsWindow(bool gotFix, uint32_t awakeMs) {
   if (gotFix) plogRtc.gFix++; else plogRtc.gNoFix++;
@@ -982,7 +986,8 @@ static void blogGpsWindow(bool gotFix, uint32_t awakeMs) {
 static void blogPrint(const char *name, const BEv *ring, int size, int n) {
   int k = n < size ? n : size;
   Serial.printf("%s: %d entries, %d shown\n", name, n, k);
-  for (int i = n - k; i < n; i++) { const BEv &e = ring[i % size]; LocalTime c = clockBreak(e.utc); Serial.printf("  %9lu ms  %02d:%02d:%02d UTC  %c  %d %d %lu\n", (unsigned long)e.ms, c.hour, c.min, c.sec, e.tag, e.a, e.b, (unsigned long)e.c); if (e.tag == 'W') Serial.printf("    rewakes %u, first data after %u ms\n", e.d, e.e); esp_task_wdt_reset(); }
+  for (int i = n - k; i < n; i++) { const BEv &e = ring[i % size]; LocalTime c = clockBreak(e.utc); Serial.printf("  %9lu ms  %02d:%02d:%02d UTC  %c  %d %d %lu\n", (unsigned long)e.ms, c.hour, c.min, c.sec, e.tag, e.a, e.b, (unsigned long)e.c); if (e.tag == 'W') { const GInfo &g = plogRtc.ginfo[i % size]; Serial.printf("    rewakes %u, first data after %u ms; motion since the last window: tilt %u, significant %u, steps %u, detect %u (255 = that many or more); moved ", e.d, e.e, g.mot[0], g.mot[1], g.mot[2], g.mot[3]);
+      if (g.movedM == 65535) Serial.print("?"); else Serial.printf("%u m", g.movedM); Serial.printf("; then sleeps %u s\n", g.nextS); } esp_task_wdt_reset(); }
 }
 // Auto beacon comes back after a crash (4) or watchdog (5, 6, 7) restart if it was on. At most AUTO_RESTORE_MAX times in a row, so a pager stuck
 // in a crash loop cannot keep transmitting; the count clears after 30 minutes without a restart. Power-on, RST and "restart" never restore it.
@@ -1005,13 +1010,22 @@ static int gpsMisses = 0;                                              // wake-u
 static bool gpsAwaiting = false; static uint32_t gpsSentAt = 0;        // woken, no answer yet; when the wake bytes last went out
 static int gpsRewakes = 0; static uint32_t gpsFirstDataMs = 0;         // this wake-up: retries needed, and ms until data arrived (0 = none)
 static GpsAdaptive gpsAd;                                              // adaptive wake interval, see src/gpsduty.h (settings: moving seconds, still minutes)
+static void gpsWinInfo(int moved, uint32_t nextMs) {
+  static uint32_t seen[4] = {0, 0, 0, 0};
+  GInfo &g = plogRtc.ginfo[(plogRtc.gN - 1) % GLOG_N];
+  for (int k = 0; k < 4; k++) { uint32_t d = motionCount[k] - seen[k]; seen[k] = motionCount[k]; g.mot[k] = (uint8_t)std::min<uint32_t>(d, 255); }
+  g.movedM = moved < 0 ? 65535 : (uint16_t)moved; g.nextS = (uint16_t)std::min<uint32_t>(nextMs / 1000, 65535);
+}
 static void gpsWinLogWake(BEv &e) { e.d = (uint16_t)gpsRewakes; e.e = (uint16_t)std::min<uint32_t>(gpsFirstDataMs, 65535); }
 static void gpsBackup(bool gotFix) {
   blogGpsWindow(gotFix, millis() - gpsOnAt);
   gpsAwaiting = false;
+  int moved = -1;                                              // metres from the fix the last window compared against
+  if (gotFix && gps.fix.valid && gpsAd.prevLat < 900) moved = (int)std::min(geoDistKm(gpsAd.prevLat, gpsAd.prevLon, gps.fix.lat, gps.fix.lon) * 1000.0, 65000.0);
   gpsIntervalMs = gpsAdaptiveNext(gpsAd, gotFix && gps.fix.valid, gps.fix.lat, gps.fix.lon, S.gpsMoveSec, S.gpsStillMin);
   if (gotFix) gpsMisses = 0;
   else { if (gpsMisses < 100) gpsMisses++; gpsIntervalMs = gpsMissSleep(gpsEverFix, gpsMisses, S.gpsStillMin); }
+  gpsWinInfo(moved, gpsIntervalMs);
   uint8_t f[24]; ubxSend(f, ubxBackup(f)); Serial1.flush(); delay(20);
   // With the GPS in backup its serial line floats. The processor's serial port then sees noise and every restart so far was an interrupt-watchdog reset inside light sleep
   // about 12 to 14 s after this point (suspected cause, not proven). So: close the port, hold both lines idle-high, reopen at wake-up.
@@ -1033,6 +1047,25 @@ static void gpsWakeCheck() {                                // every pass, scree
   if (r == GPS_REOPEN_AND_SEND) { Serial1.end(); delay(5); Serial1.begin(GPS_BAUD, SERIAL_8N1, PIN_GPS_RX, PIN_GPS_TX); }
   gpsSendWake();
   gpsRewakes++; gpsSentAt = now;
+}
+// Motion wake (setting "gpsmo"). While the sensor is being proven, the 5 minute check while still stays as it is, so a movement the sensor
+// misses costs no more than before; the long backstop setting is not used yet.
+static uint32_t motionGpsWakes = 0, motionPinWakes = 0;
+static uint32_t motionWakesTotal() { return motionGpsWakes; }
+static uint32_t motionPinWakesTotal() { return motionPinWakes; }
+static void motionDuty() {                                  // every pass
+  static bool tried = false;
+  if (!S.gpsMotion) { gpsAd.motionAware = false; return; }
+  if (!motionOk) { if (!tried) { tried = true; motionBegin(); } if (!motionOk) return; }
+  gpsAd.motionAware = true;
+  motionPoll();
+  if (!motionNew) return;
+  uint8_t kinds = motionNew; motionNew = 0;
+  bool wake = gpsAdaptiveOnMotion(gpsAd, millis());              // once per report: it also puts the short interval back
+  if (wake && aGps && gpsSleeping) {                             // only cuts the long sleep short, at most once a minute
+    motionGpsWakes++; blogBeacon('M', kinds);
+    gpsMisses = 0; gpsWakeAt = millis();
+  }
 }
 static void gpsDuty() {                                     // called every pass while the screen is off
   if (!aGps) return;
@@ -1084,11 +1117,11 @@ static bool screenTouch() {
   return wasOff;
 }
 static void toPx(double lat, double lon, int z, double &x, double &y);
-// Chase mode, every pass: remember where the followed station is, move the map when it has moved a pixel or more, warn when the battery is low.
+// Following, every pass: remember where the followed station is, move the map when it has moved a pixel or more, warn when the battery is low.
 static void chaseTick() {
-  if (!chase.on) return;
+  if (demoMode) return;                                        // demo screenshots set the map position themselves
   if (!chase.followingMe()) for (auto &s : stations) if (s.used && !s.noPos && strcmp(s.call, chase.call) == 0) { chase.have = true; chase.lat = s.lat; chase.lon = s.lon; chase.heard = s.heard; break; }
-  if (int w = chaseBatteryWarning(chase, batPct, batCharging)) { say(w == 10 ? "Battery 10 %: chase mode is using it fast" : "Battery 20 %: chase mode is using it fast"); haptic.play(H_ERROR); }
+  if (int w = chaseBatteryWarning(chase, batPct, batCharging)) { say(w == 10 ? "Battery 10 %: the screen is kept on" : "Battery 20 %: the screen is kept on"); haptic.play(H_ERROR); }
   bool wasPaused = chase.paused;
   if (!chaseFollowing(chase, millis())) return;
   if (wasPaused) dirty = true;
@@ -1106,7 +1139,7 @@ static void screenTick() {
   static bool slow = false;                                  // processor at 80 MHz when nothing was touched for 5 s, 240 MHz while in use (radio, GPS and beacons do not need more)
   bool wantSlow = millis() - lastActivity > 5000;
   if (wantSlow != slow) { slow = wantSlow; setCpuFrequencyMhz(slow ? 80 : 240); }
-  if (chase.on) { if (screenState) { screenState = 0; powerApply(); tft.setBrightness(S.brightness); dirty = true; } return; }   // never dims or switches off
+  if (chase.keepScreen) { if (screenState) { screenState = 0; powerApply(); tft.setBrightness(S.brightness); dirty = true; } return; }   // never dims or switches off
   if (!S.dimSec && !S.offSec) { if (screenState) { screenState = 0; tft.setBrightness(S.brightness); } return; }
   uint32_t idle = (millis() - lastActivity) / 1000;
   int want = (S.offSec && idle >= (uint32_t)S.offSec) ? 2 : ((S.dimSec && idle >= (uint32_t)S.dimSec) ? 1 : 0);
@@ -1343,7 +1376,9 @@ static void openMainMenu() {
       else snprintf(mainMenu.info2, sizeof mainMenu.info2, "Battery, screen off:  USB was plugged in");
     } else { strcpy(mainMenu.info1, "Battery current: no reading from the gauge"); } }
   mmAdd("Messages", MA_MESSAGES); mmAdd("Phone setup", MA_SETUP); mmAdd("Beacon now", MA_BEACON);
-  mmAdd(chase.on ? "Chase mode is ON: turn off" : "Chase mode...", chase.on ? MA_CHASE_OFF : MA_CHASE_ASK);
+  if (!chase.followingMe()) { char t[32]; snprintf(t, sizeof t, "Following %s: follow me", chase.call); mmAdd(t, MA_FOLLOW_ME); }
+  else if (nOrd && selCall[0]) { char t[32]; snprintf(t, sizeof t, "Follow %s", selCall); mmAdd(t, MA_FOLLOW_STATION); }     // the station selected in the list
+  mmAdd(chase.keepScreen ? "Screen is kept on: turn off" : "Keep screen on...", chase.keepScreen ? MA_KEEP_OFF : MA_KEEP_ASK);
   mmAdd(autoBeacon ? "Auto-beacon is ON: turn off" : "Auto-beacon is OFF: turn on", MA_AUTO);
   mmAdd("Help: keys and map card", MA_HELP); mmAdd("Power off", MA_POWEROFF_ASK); mmAdd("Close menu", MA_CLOSE);
   dirty = true;
@@ -1356,18 +1391,17 @@ static void mainMenuAct(MenuAct a) {
     case MA_SETUP: startSetup(); drawSetup(); break;
     case MA_BEACON: if (beacon.manualOk(millis())) sendBeacon(); else say("Wait: beacon just sent"); break;
     case MA_AUTO: autoBeacon = !autoBeacon; if (autoBeacon) beacon.start(millis()); say(autoBeacon ? "Auto beacon ON" : "Auto beacon off"); break;
-    case MA_CHASE_ASK: {
-      mainMenu.n = 0; mainMenu.sel = 0; mainMenu.on = true; strcpy(mainMenu.title, "Chase mode: keep the screen on?");
-      strcpy(mainMenu.info1, "The screen will not dim or switch off."); strcpy(mainMenu.info2, "This uses much more battery."); mainMenu.info3[0] = 0;
-      mmAdd("No, cancel", MA_NO); mmAdd("Follow me", MA_CHASE_ME);                     // No first: a stray press cannot switch it on
-      if (nOrd && selCall[0]) { char t[32]; snprintf(t, sizeof t, "Follow %s", selCall); mmAdd(t, MA_CHASE_STATION); }
-      break; }
-    case MA_CHASE_ME: chaseStart(chase, nullptr); say(gps.fix.valid ? "Chase mode: following me" : "Chase mode: waiting for a GPS fix"); break;
-    case MA_CHASE_STATION:
-      chaseStart(chase, selCall);
+    case MA_FOLLOW_ME: chaseFollow(chase, nullptr); say(gps.fix.valid ? "Following me" : "Following me: waiting for a GPS fix"); break;
+    case MA_FOLLOW_STATION:
+      chaseFollow(chase, selCall);
       for (auto &s : stations) if (s.used && !s.noPos && strcmp(s.call, chase.call) == 0) { chase.have = true; chase.lat = s.lat; chase.lon = s.lon; chase.heard = s.heard; }
-      say("Chase mode on"); break;
-    case MA_CHASE_OFF: chaseStop(chase); screenTouch(); say("Chase mode off"); break;
+      { static char note[40]; snprintf(note, sizeof note, "Following %s", chase.call); say(note); } break;
+    case MA_KEEP_ASK:
+      mainMenu.n = 0; mainMenu.sel = 0; mainMenu.on = true; strcpy(mainMenu.title, "Keep the screen on?");
+      strcpy(mainMenu.info1, "It will not dim or switch off."); strcpy(mainMenu.info2, "This uses much more battery."); mainMenu.info3[0] = 0;
+      mmAdd("No, cancel", MA_NO); mmAdd("Yes, keep it on", MA_KEEP_YES); break;          // No first: a stray press cannot switch it on
+    case MA_KEEP_YES: chaseKeepScreen(chase, true); say("Screen stays on"); break;
+    case MA_KEEP_OFF: chaseKeepScreen(chase, false); screenTouch(); say("Screen times out as usual"); break;
     case MA_POWEROFF_ASK:
       mainMenu.n = 0; mainMenu.sel = 0; mainMenu.on = true; strcpy(mainMenu.title, "Power off the pager?");
       mmAdd("No, keep it on", MA_NO); mmAdd("Yes, power off", MA_POWEROFF_YES); break;      // No first: a stray press cannot switch it off
@@ -1396,6 +1430,9 @@ static void lightSleepOnce() {
   // our code runs. Waking does not need the processor interrupt, so it is switched off for every wake pin first and switched on again after the restore below.
   for (int pin : {PIN_LORA_IRQ, PIN_KB_INT, PIN_ROT_PRESS, PIN_ROT_A, PIN_ROT_B, PIN_GPS_RX}) gpio_intr_disable((gpio_num_t)pin);
   gpio_wakeup_enable((gpio_num_t)PIN_LORA_IRQ, GPIO_INTR_HIGH_LEVEL);
+  // Only in the GPS's long sleep is there anything to cut short; otherwise (walking: a report about twice a second) the once-a-second wake reads them.
+  bool motionWake = S.gpsMotion && motionOk && aGps && gpsSleeping && gpsAd.still >= 2 && !digitalRead(PIN_MOTION_INT);      // a line already high is left to the polling
+  if (motionWake) { gpio_intr_disable((gpio_num_t)PIN_MOTION_INT); gpio_wakeup_enable((gpio_num_t)PIN_MOTION_INT, GPIO_INTR_HIGH_LEVEL); }
   if (digitalRead(PIN_KB_INT)) gpio_wakeup_enable((gpio_num_t)PIN_KB_INT, GPIO_INTR_LOW_LEVEL);
   if (digitalRead(PIN_ROT_PRESS)) gpio_wakeup_enable((gpio_num_t)PIN_ROT_PRESS, GPIO_INTR_LOW_LEVEL);
   gpio_wakeup_enable((gpio_num_t)PIN_ROT_A, digitalRead(PIN_ROT_A) ? GPIO_INTR_LOW_LEVEL : GPIO_INTR_HIGH_LEVEL);
@@ -1412,9 +1449,11 @@ static void lightSleepOnce() {
   { int cause = (int)esp_sleep_get_wakeup_cause(), pb = pinBits();
     if (cause == ESP_SLEEP_WAKEUP_TIMER) plogTimerWakes++;
     else if ((pb & 1) == 0 && (pb & 4) && (pb & 8) && (pb & 16) && !(pb & 32)) plogRtc.gpsWakes++;      // only the GPS start bit: counted, not logged
+    else if (motionWake && digitalRead(PIN_MOTION_INT) && !(pb & 1) && (pb & 4) && (pb & 8) && (pb & 16)) motionPinWakes++;      // counted, not logged
     else plog('w', cause, pb); }
   // gpio_wakeup_enable() had made these pins level-triggered interrupts: undo that at once, or a pin still at its wake level fires its interrupt forever (watchdog reset)
   for (int pin : {PIN_LORA_IRQ, PIN_KB_INT, PIN_ROT_PRESS, PIN_ROT_A, PIN_ROT_B, PIN_GPS_RX}) gpio_wakeup_disable((gpio_num_t)pin);
+  if (motionWake) { gpio_wakeup_disable((gpio_num_t)PIN_MOTION_INT); gpio_set_intr_type((gpio_num_t)PIN_MOTION_INT, GPIO_INTR_DISABLE); }     // no processor interrupt on this pin
   gpio_set_intr_type((gpio_num_t)PIN_LORA_IRQ, GPIO_INTR_POSEDGE);                       // the radio library uses a rising edge
   gpio_intr_enable((gpio_num_t)PIN_LORA_IRQ);
   attachInterrupt(PIN_ROT_A, knobIsr, CHANGE); attachInterrupt(PIN_ROT_B, knobIsr, CHANGE);                                      // the knob uses CHANGE
@@ -1513,7 +1552,8 @@ void loop() {
       if (cmdN >= 0) {
         if (c != '\n' && c != '\r') { if (cmdN < (int)sizeof cmd - 1) cmd[cmdN++] = (char)c; continue; }
         cmd[cmdN] = 0; cmdN = -1;
-        if (cmd[0] == 'G') {
+        if (cmd[0] == 'G') { chaseLook(chase, millis());           // a position set over USB counts as looking around
+         
           double la, lo; int z;
           if (sscanf(cmd + 1, "%lf,%lf,%d", &la, &lo, &z) == 3 && fabs(la) < 85 && fabs(lo) <= 180) {
             for (int i = 0; i < NZ; i++) if (ZOOMS[i] == z) zi = i;
@@ -1546,11 +1586,6 @@ void loop() {
             int v = atoi(cmd + 2);
             if (v >= 0 && v <= 3600) { S.offSec = v; if (v && S.dimSec >= v) S.dimSec = v / 2; saveSettings(S); applySettings(); Serial.printf("screen off after %d s, dim after %d s (saved)\n", S.offSec, S.dimSec); }
           }
-          else if (cmd[1] == 'M') {                                               // PM: load the motion sensor, then report tilt / significant-motion events for 5 minutes
-            if (!motionOk && !motionBegin()) { Serial.println("motion: failed"); }
-            else { Serial.println("motion: move or tilt the pager (5 min)"); uint32_t t0 = millis(); uint32_t lt = 0, ls = 0;
-              while (millis() - t0 < 300000) { motionPoll(); if (motionTilts != lt || motionSigs != ls) { lt = motionTilts; ls = motionSigs; Serial.printf("  %lus: tilt %lu, significant %lu\n", (millis() - t0) / 1000, (unsigned long)lt, (unsigned long)ls); } delay(20); esp_task_wdt_reset(); } }
-          }
           else if (cmd[1] == 'W') {                                               // the event log, oldest first
             int n = plogN < 96 ? plogN : 96, first = plogN - n; uint32_t now = millis();
             Serial.printf("event log: %d events, %lu timer wakes this run, now %lu ms; stage %lu set at %lu ms, %lu sleeps, pins at last sleep %d\n", plogN, (unsigned long)plogTimerWakes, (unsigned long)now, (unsigned long)plogRtc.stage, (unsigned long)plogRtc.stageMs, (unsigned long)plogRtc.beats, plogRtc.pins);
@@ -1564,6 +1599,10 @@ void loop() {
 #if GPS_HINT_CHECK
             gpsHintReport();
 #endif
+            Serial.printf("motion wake %s, sensor %s; woke the GPS %lu times; reports:", S.gpsMotion ? "on" : "off", motionOk ? "up" : "not started", (unsigned long)motionWakesTotal());
+            Serial.printf(" (processor woken by the sensor %lu times)", (unsigned long)motionPinWakesTotal());
+            for (int k = 0; k < MOT_KINDS; k++) Serial.printf(" %s %lu%s,", MOT_NAME[k], (unsigned long)motionCount[k], motionAvail[k] ? "" : " (n/a)");
+            Serial.println();
             Serial.printf("auto beacon %s, restored %d time(s) since the last 30 min stable run\n", autoBeacon ? "on" : "off", plogRtc.autoRestores); }
             for (int i = 0; i < n; i++) { PEv &e = plogBuf[(first + i) % 96]; Serial.printf("  %9lu ms  %c  %d %d\n", (unsigned long)e.ms, e.tag, e.a, e.b); }
           }
@@ -1637,7 +1676,7 @@ void loop() {
   if (setupMode) { setupTick(); return; }   // while the phone setup screen is open, nothing else runs (receiving still does)
 
   pstage(7);
-  screenTick(); gpsPosSave(); gpsWakeCheck(); gpsDuty(); chaseTick();
+  screenTick(); gpsPosSave(); gpsWakeCheck(); motionDuty(); gpsDuty(); chaseTick();
   { static uint32_t clkTickAt = 0; static int lastMin = -1, lastPct = -2; static bool lastChg = false;
     if (millis() - clkTickAt > 1000) {
       clkTickAt = millis(); clockTick();
@@ -1757,7 +1796,7 @@ void loop() {
   if (knobIconUntil && (int32_t)(millis() - knobIconUntil) >= 0) { knobIconUntil = 0; dirty = true; }     // take the knob icon away again
   if (rxIconUntil && (int32_t)(millis() - rxIconUntil) >= 0) { rxIconUntil = 0; dirty = true; }     // antenna back to green or grey
   static uint32_t chaseDrawn = 0;
-  if (chase.on && millis() - chaseDrawn > 1000) { chaseDrawn = millis(); dirty = true; }
+  if (!chase.followingMe() && millis() - chaseDrawn > 1000) { chaseDrawn = millis(); dirty = true; }
   static uint32_t lastAge = 0;
   if ((stView == 0 || stView == 3) && millis() - lastAge > 15000) { lastAge = millis(); dirty = true; }
   static uint32_t lastFade = 0;

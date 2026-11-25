@@ -55,6 +55,18 @@ int main() {
   expect(gpsRewakeStep(60000, 500, 0) == GPS_WAIT, "data is arriving: leave it alone");
   expect(gpsRewakeStep(1500, 5, 0) == GPS_SEND_AGAIN, "a few noise characters are not an answer");
   expect(gpsRewakeStep(4999, 0, 5) == GPS_WAIT && gpsRewakeStep(5000, 0, 5) == GPS_REOPEN_AND_SEND, "after five quick retries: every 5 s");
+  // GPS wander: with the sensor quiet, small "moves" are not believed
+  { GpsAdaptive w; w.motionAware = true;
+    gpsAdaptiveReset(w, true, lat, lon); gpsAdaptiveNext(w, true, lat, lon, MV, ST); expect(gpsAdaptiveNext(w, true, lat, lon, MV, ST) == LONG, "quiet and still: long");
+    expect(gpsAdaptiveNext(w, true, lat + 0.00036, lon, MV, ST) == LONG, "40 m jump, sensor quiet: wander, stays long");
+    expect(gpsAdaptiveNext(w, true, lat - 0.00008, lon, MV, ST) == LONG, "49 m back, sensor quiet: still long");
+    expect(gpsAdaptiveNext(w, true, lat + 0.0018, lon, MV, ST) == SHORT, "about 200 m with a quiet sensor: believed (a smooth ride)");
+    gpsAdaptiveNext(w, true, lat + 0.0018, lon, MV, ST); gpsAdaptiveNext(w, true, lat + 0.0018, lon, MV, ST);
+    gpsAdaptiveOnMotion(w, 500000); expect(gpsAdaptiveNext(w, true, lat + 0.0023, lon, MV, ST) == SHORT, "56 m with the sensor reporting: movement");
+    gpsAdaptiveNext(w, true, lat + 0.0023, lon, MV, ST); gpsAdaptiveNext(w, true, lat + 0.0023, lon, MV, ST);
+    expect(gpsAdaptiveNext(w, true, lat + 0.0028, lon, MV, ST) == LONG, "the report counts for one check only"); }
+  { GpsAdaptive w; gpsAdaptiveReset(w, true, lat, lon); gpsAdaptiveNext(w, true, lat, lon, MV, ST); gpsAdaptiveNext(w, true, lat, lon, MV, ST);
+    expect(gpsAdaptiveNext(w, true, lat + 0.00054, lon, MV, ST) == SHORT, "without the sensor 60 m is movement, as before"); }
   if (!fails) printf("gpsduty: all ok\n");
   return fails ? 1 : 0;
 }
