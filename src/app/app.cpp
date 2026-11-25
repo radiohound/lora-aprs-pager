@@ -307,7 +307,7 @@ static bool sortByDistance = true;          // S key: nearest first, or most rec
 static char selCall[10] = "";               // selected station (kept by call sign so it survives re-sorting)
 static Chase chase;                          // what the map follows (me unless a station is chosen) and "keep screen on" (chase.h)
 static const int LIST_W = 130;
-// The four views of the L key, named: shown as a pop-up when you switch and permanently in the top line.
+// The four views of the L key, named: shown as a pop-up when you switch.
 //   LIST+MAP      list of heard stations on the left, map on the right, station icons on the map
 //   MAP+STATIONS  the map full width, station icons and call signs on it (no list)
 //   MAP ONLY      the map full width with NO stations at all (only you): for reading the map itself
@@ -583,7 +583,7 @@ static void drawHelp(lgfx::LovyanGFX &D) {
       "C           centre the map on me",
       "B           beacon now        T   auto-beacon on/off",
       "Knob turn   pan left-right, pan up-down, zoom, or move the list",
-      "Knob press  next knob mode (the top line shows which)",
+      "Knob press  next knob mode (an icon shows which)",
       "Knob hold   centre the map on me",
       "Screen off: the first key press only wakes it.",
       "Map tiles are only read from the SD card, never written."};

@@ -19,9 +19,14 @@ firmware's demo mode (`DEMO MODE` is shown on the screen, and nothing is transmi
 - **Heard stations.** Decodes LoRa APRS position packets (plain and compressed positions, objects), draws each station with its
   APRS symbol (24 px, including overlay letters), and keeps a list. Icons that would overlap are fanned out with a line to the true
   position, and the labels are stacked so none covers another. Your own symbol and call sign are drawn too.
-- **Four views on the L key**, named in the top line: `LIST+MAP`, `MAP+STATIONS`, `MAP ONLY`, `FULL LIST`. The full list shows, for each
+- **Four views on the L key**, named as you switch: `LIST+MAP`, `MAP+STATIONS`, `MAP ONLY`, `FULL LIST`. The full list shows, for each
   station, how long ago it was heard, how many packets, whether it came directly or through a digipeater (and which), the path, RSSI and
   SNR, position, distance and bearing from you, its comment, and the complete packet text.
+- **Status icons** down the right edge of the map, under the battery: GPS fix (green) or not (grey); the antenna, green with auto-beacon on and
+  grey with it off, **red** while transmitting and **purple** for 2 s after a packet is received; what the knob does (for 5 s after a press);
+  an envelope with the number of unread messages; a padlock while the screen is kept on. The top line is only used for passing notices.
+- **Repeaters that hear you.** When a digipeater repeats one of your packets and the path shows which one, the pager says so and lists it with
+  its signal and when it was heard. It has no map position until the pager hears the digipeater's own position.
 - **Beacon.** Sends your position with your chosen symbol and comment. Listens first (channel activity detection) and skips the beacon if
   the channel is busy. Auto-beaconing is **off at power-on** unless you switch that on in setup; moving it beacons about once a minute
   after 150 m, standing still every 10 minutes (all settable).
@@ -39,7 +44,8 @@ firmware's demo mode (`DEMO MODE` is shown on the screen, and nothing is transmi
   wakes it at once, showing what was there. After the backlight was fully off, that first touch only wakes it. A new message also wakes it.
 - **Low power with the screen off.** The processor light-sleeps between events and still hears every packet; the SD card and the display panel are
   powered down; the GPS sleeps and wakes now and then for a fix, **adaptively**: every minute while you are moving, and every few minutes once two fixes in a row
-  show you have not moved (or it cannot see the sky). Both times, and an off switch, are in the phone setup ("Battery, screen off"). A beacon sent while
+  show you have not moved (or it cannot see the sky). Both times, and an off switch, are in the phone setup ("Battery, screen off"). With **motion wake** (off by default, a checkbox in the phone setup) the motion sensor cuts the long GPS sleep short when you start moving
+  (tested walking, not yet driving). A beacon sent while
   the screen is off uses the last fix, so it can be a little old. Measured on one pager: **about 24 mA with the screen off, against about 65 mA before** (see [Battery life](#battery-life)). USB disables
   the sleep, so the serial port stays up.
 - **Help screen.** Backspace, then **Help**: the keys and knob actions, and a QR code for the map SD card guide (turn the knob for the second page).
