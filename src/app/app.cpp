@@ -38,6 +38,7 @@ static void rxApply();
 #include <soc/gpio_struct.h>
 #include <soc/gpio_sig_map.h>
 #include "chase.h"
+#include "txbackoff.h"
 #include "gpsduty.h"
 #include <esp_task_wdt.h>
 #include <esp_system.h>
@@ -51,6 +52,7 @@ static bool fbOk = false;
 
 // ---- LoRa APRS receive (433.775 MHz, SF12, BW125, CR4/5, private sync 0x12). It also transmits beacons and messages once a call sign is saved. ----
 static SX1262 *radio = nullptr;
+static TxBackoff txBack;                             // radio failures in a row: automatic sends wait longer, one buzz
 // The SD card shares the SPI bus with the radio. With the card's power off and its chip-select (CS) not driven high, the radio stops working
 // (shown by serial command PX: floating, pulled up or low all fail; high works). Driving CS high all the time costs about 14 mA (it leaks into
 // the unpowered card), so it is driven only while the radio is being talked to, and floats the rest of the time.
@@ -1227,7 +1229,7 @@ static int txFrame(const unsigned char *f, size_t len) {
   bool free = false;
   for (int tries = 0; tries < 3 && !free; tries++) {
     pstage(20); int c = scanChannelBounded(); pstage(21);
-    if (c == CAD_STUCK) return 2;                      // nothing sent; the radio has been reset, the caller tries again later
+    if (c == CAD_STUCK) { txBack.failed(millis()); return 2; }     // nothing sent; the radio has been reset, the caller tries again later
     if (c == RADIOLIB_CHANNEL_FREE) free = true; else delay(300 + (esp_random() % 1200));
   }
   if (!free) { rxApply(); return 1; }
@@ -1243,7 +1245,8 @@ static int txFrame(const unsigned char *f, size_t len) {
   rxFlag = false;                                   // the TX-done interrupt shares the receive pin
   rxApply();
   pstage(24); M.noteTx(millis());
-  return st == RADIOLIB_ERR_NONE ? 0 : 2;
+  if (st == RADIOLIB_ERR_NONE) { txBack.sent(); return 0; }
+  txBack.failed(millis()); return 2;
 }
 // A message or ack from the engine: "CALL>TOCALL,PATH" + the engine's info part.
 static int txEngineItem(const msg::TxItem &it) {
@@ -1257,7 +1260,7 @@ static int txEngineItem(const msg::TxItem &it) {
 
 // Send one position beacon now. Listens first (channel activity detection, up to 3 tries with a random wait) and gives up if the
 // channel stays busy. Returns true if it went out. Blocks about 3 s at SF12.
-static bool sendBeacon() {
+static bool sendBeacon(bool automatic = false) {
   pstage(19);
   if (demoMode) { say("Demo mode: nothing is sent"); return false; }
   if (!radioOk) { say("No radio"); return false; }
@@ -1270,7 +1273,7 @@ static bool sendBeacon() {
   int r = txFrame(f, len);
   blogBeacon('B', r);
   if (r == 1) { say("Channel busy: beacon skipped"); return false; }
-  if (r != 0) { say("TX failed"); haptic.play(H_ERROR); return false; }
+  if (r != 0) { say("TX failed"); if (!automatic || txBack.buzz()) haptic.play(H_ERROR); return false; }   // you asked: always buzz; on its own: once
   txCount++; beacon.sent(millis(), gps.fix.lat, gps.fix.lon); lastBeaconUtc = utcNow();
   pstage(25); haptic.play(H_MESSAGE); pstage(26); say("Beacon sent");
   return true;
@@ -1682,16 +1685,16 @@ void loop() {
   if (gps.fix.valid && !firstFixNoted && !demoMode) { firstFixNoted = true; blogBeacon('F', 0); }
   if (!autoBeacon || gps.fix.valid) noFixNoted = false;
   else if (!noFixNoted && beacon.due(millis(), true, gps.fix.lat, gps.fix.lon)) { noFixNoted = true; blogBeacon('N', 1); }   // would be due if there were a fix
-  if (autoBeacon && (int32_t)(millis() - nextTry) >= 0 && beacon.due(millis(), gps.fix.valid, gps.fix.lat, gps.fix.lon)) { if (!sendBeacon()) nextTry = millis() + 10000; }
+  if (autoBeacon && (int32_t)(millis() - nextTry) >= 0 && txBack.allowed(millis()) && beacon.due(millis(), gps.fix.valid, gps.fix.lat, gps.fix.lon)) { if (!sendBeacon(true)) nextTry = millis() + 10000; }
 
   pstage(10);
   // messages and acks waiting to go out
-  if (radioOk && M.callOk()) {
+  if (radioOk && M.callOk() && txBack.allowed(millis())) {            // while the radio is failing, queued messages wait without using up tries
     msg::TxItem it;
     if (M.nextTx(millis(), it)) {
       if (!ui.active()) { say(it.isAck ? "Sending ack..." : "Sending message..."); if (screenState != 2) render(); }
       int r = txEngineItem(it); M.txDone(r == 0, millis());
-      if (r == 2) haptic.play(H_ERROR); else if (r == 0 && !it.isAck) haptic.play(H_TICK);
+      if (r == 2) { if (txBack.buzz()) haptic.play(H_ERROR); } else if (r == 0 && !it.isAck) haptic.play(H_TICK);
       ui.dirty = true; dirty = true;
     }
   }
