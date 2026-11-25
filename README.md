@@ -225,6 +225,9 @@ two-app flash layout); the tocall is the experimental `APZPGR` (a registered one
 
 ## Releases
 
+> **The latest release is older than the code here** and lacks several recent fixes (among them: the radio with the SD card switched off, the
+> GPS wake-up, and message acknowledgements). To get those, build from source.
+
 The latest release is **v0.1.0-alpha.2** (about 24 mA with the screen off instead of about 65 mA; the first was v0.1.0-alpha.1). Both are testing releases, meant for people who are comfortable building firmware and who hold an amateur radio licence.
 Bug reports are welcome. Not done yet is listed above; the registered tocall (the pager currently transmits as the experimental `APZPGR`, see
 `docs/tocall-request.md`) is one of the first things to change.
