@@ -34,6 +34,7 @@ static void rxApply();
 #include "messaging.h"
 #include "clock.h"
 #include "ubx.h"
+#include "ui_icons.h"
 #include "gpsduty.h"
 #include <esp_task_wdt.h>
 #include <esp_system.h>
@@ -182,7 +183,6 @@ static void drawBatIcon(lgfx::LovyanGFX &D, int W) {
   if (!S.batIcon || batPct < 0) return;
   const int w = 28, h = 12, x = W - w - 5, y = 2;
   uint16_t c = batPct > 30 ? TFT_GREEN : (batPct > 15 ? TFT_YELLOW : TFT_RED);
-  D.fillRect(x - 1, y - 1, w + 5, h + 2, TFT_BLACK);
   D.drawRect(x, y, w, h, TFT_WHITE); D.fillRect(x + w, y + 3, 2, h - 6, TFT_WHITE);
   D.fillRect(x + 1, y + 1, w - 2, h - 2, TFT_BLACK);
   int fw = (w - 4) * batPct / 100; if (fw < 1 && batPct > 0) fw = 1;
@@ -195,6 +195,26 @@ static void drawBatIcon(lgfx::LovyanGFX &D, int W) {
         if (pass == 0) { D.drawPixel(bx + k - 1, by + r, TFT_BLACK); D.drawPixel(bx + k + 1, by + r, TFT_BLACK); D.drawPixel(bx + k, by + r - 1, TFT_BLACK); D.drawPixel(bx + k, by + r + 1, TFT_BLACK); }
         else D.drawPixel(bx + k, by + r, TFT_WHITE);
       }
+  }
+}
+// Status icons down the right edge of the map, under the battery (shapes: src/ui_icons.h). The map shows around them.
+static const int ICON_COL_W = 40, ICON_COL_BOTTOM = 150;     // station labels keep out of this corner
+static const uint32_t KNOB_ICON_MS = 5000;                   // the knob-mode icon shows this long after a press changes the mode
+static uint32_t knobIconUntil = 0;                           // 0 = hidden
+static void drawUiIcon(lgfx::LovyanGFX &D, const UiIcon &ic, int cx, int cy) {       // centred on cx, cy
+  int x0 = cx - ic.w / 2, y0 = cy - ic.h / 2;
+  for (int y = 0; y < ic.h; y++) for (int x = 0; x < ic.w; x++) {
+    uint16_t c;
+    switch (ic.rows[y][x]) {
+      case 'K': c = TFT_BLACK; break;
+      case 'W': c = TFT_WHITE; break;
+      case 'G': c = D.color565(0, 220, 0); break;
+      case 'A': c = D.color565(130, 130, 130); break;
+      case 'Y': c = D.color565(255, 230, 0); break;
+      case 'R': c = D.color565(255, 40, 40); break;
+      default: continue;
+    }
+    D.drawPixel(x0 + x, y0 + y, c);
   }
 }
 // "Mon 23 Nov 14:05  87%+" (or just the time) drawn with its left edge at x; returns the width in pixels
@@ -615,7 +635,7 @@ static void render() {
     }
     for (int i = 0; i < nm; i++) {
       int w = 6 * (int)strlen(mk[i].st->call), off = hasIcon[i] ? 14 : 6, x = mk[i].ix + off, y = mk[i].iy - 4;   // x, y: where the text starts
-      if (x + w + 2 > W) x = mk[i].ix - off - w - 1;                                    // no room on the right: put it on the left
+      if (x + w + 2 > (y < ICON_COL_BOTTOM ? W - ICON_COL_W : W)) x = mk[i].ix - off - w - 1;                                    // no room on the right: put it on the left
       for (int tries = 0; tries < 8; tries++) {                                          // slide down until the box overlaps no other label
         bool hit = false;
         for (int k = 0; k < nl; k++) if (x - 2 < lx[k] + lw[k] && lx[k] < x - 2 + w + 3 && y - 2 < ly[k] + 11 && ly[k] < y - 2 + 11) { hit = true; break; }
@@ -637,13 +657,19 @@ static void render() {
   if (stView == 0) drawListPanel(D, H);
   // status at the top of the map, position at the bottom
   D.setTextColor(TFT_WHITE, TFT_BLACK); D.setTextSize(1);
-  D.setCursor(x0 + 2, 2);
-  if (notice && millis() < noticeUntil) D.printf(" %s                         ", notice);
-  else {
-    char tx[16] = "TX off";
-    if (autoBeacon) { if (beacon.hasSent()) { char a[8]; geoFmtAge(a, sizeof a, beacon.lastSentAgeMs(millis()) / 1000); snprintf(tx, sizeof tx, "TX auto %s", a); } else snprintf(tx, sizeof tx, "TX auto"); }
-    char um[12] = ""; if (M.unreadTotal()) snprintf(um, sizeof um, " MSG %d", M.unreadTotal());
-    D.printf(" %s z%d %s %lums GPS %s %s%s ", VIEW_TAG[stView], z, MODE_NAME[mode], (unsigned long)tTiles, gps.fix.valid ? "fix" : "none", demoMode ? "DEMO MODE" : tx, demoMode ? "" : um);
+  if (notice && millis() < noticeUntil) { D.setCursor(x0 + 2, 2); D.printf(" %s ", notice); }     // the top row is only used for passing notices
+  else if (demoMode) { D.setCursor(x0 + 2, 2); D.print(" DEMO MODE "); }
+  {
+    int ix = W - ICON_COL_W / 2;
+    drawUiIcon(D, gps.fix.valid ? UI_GPS_FIX : UI_GPS_NONE, ix, 33);
+    drawUiIcon(D, (autoBeacon && !demoMode) ? UI_TX_AUTO : UI_TX_OFF, ix, 65);
+    if (knobIconUntil)                                                      // what the knob does now
+      drawUiIcon(D, mode == M_ZOOM ? UI_ZOOM : mode == M_PANX ? UI_PAN_X : mode == M_PANY ? UI_PAN_Y : UI_STATIONS, ix, 97);
+    if (M.unreadTotal() && !demoMode) {                                     // unread messages: envelope and count
+      drawUiIcon(D, UI_MAIL, ix, 128);
+      D.setTextColor(TFT_WHITE, TFT_BLACK); D.setTextSize(1); char um[8]; snprintf(um, sizeof um, "%d", (int)M.unreadTotal());
+      D.setCursor(ix - 3 * (int)strlen(um), 139); D.print(um);
+    }
   }
   D.setCursor(x0 + 2, H - 10);
   D.printf(" %.4f %.4f ", clat, clon);
@@ -1130,6 +1156,9 @@ static int txFrame(const unsigned char *f, size_t len) {
   // On battery the knob lines pick up transmitter noise and their pin-change interrupts can fire thousands of times a second, which trips the
   // interrupt watchdog (seen on this pager by the Meshtastic project). So the knob interrupts are off while we transmit.
   detachInterrupt(PIN_ROT_A); detachInterrupt(PIN_ROT_B);
+  // The antenna icon turns red while we are on the air. transmit() blocks, so it is drawn straight onto the panel just before (a few ms, far
+  // quicker than a full redraw), on the map only and never with the screen off; the next redraw puts the normal icon back.
+  if (screenState != 2 && stView != 3 && !ui.active() && !mainMenu.on && !helpOn && !setupMode) { drawUiIcon(tft, UI_TX_NOW, tft.width() - ICON_COL_W / 2, 65); dirty = true; }
   pstage(22); int st = radio->transmit(f, len); pstage(23);
   kLast = (digitalRead(PIN_ROT_A) << 1) | digitalRead(PIN_ROT_B); kAcc = 0; knobSteps = 0;
   attachInterrupt(PIN_ROT_A, knobIsr, CHANGE); attachInterrupt(PIN_ROT_B, knobIsr, CHANGE);
@@ -1459,7 +1488,7 @@ void loop() {
     if (ignorePress) { if (!pressed) ignorePress = false; pressed = false; } }
   if (pressed && !wasPressed) { pressedAt = millis(); longDone = false; }
   if (pressed && !longDone && millis() - pressedAt >= 600) { longDone = true; if (helpOn) { helpOn = false; dirty = true; } else if (mainMenu.on) { mainMenu.on = false; dirty = true; haptic.play(H_CLICK); } else if (ui.active()) { ui.press(true); haptic.play(H_CLICK); if (!ui.active()) dirty = true; } else if (stView == 3) { stView = 0; haptic.play(H_CLICK); say(VIEW_NAME[0]); dirty = true; } else centerOnGps(); }
-  if (!pressed && wasPressed && !longDone) { if (helpOn) { helpOn = false; dirty = true; } else if (mainMenu.on) { haptic.play(H_CLICK); mainMenuAct(mainMenu.act[mainMenu.sel]); } else if (ui.active()) { ui.press(false); haptic.play(H_TICK); if (!ui.active()) dirty = true; } else if (stView == 3) { haptic.play(H_CLICK); ui.open(); ui.openCompose(selCall); } else { mode = nextMode(mode); haptic.play(H_TICK); dirty = true; } }
+  if (!pressed && wasPressed && !longDone) { if (helpOn) { helpOn = false; dirty = true; } else if (mainMenu.on) { haptic.play(H_CLICK); mainMenuAct(mainMenu.act[mainMenu.sel]); } else if (ui.active()) { ui.press(false); haptic.play(H_TICK); if (!ui.active()) dirty = true; } else if (stView == 3) { haptic.play(H_CLICK); ui.open(); ui.openCompose(selCall); } else { mode = nextMode(mode); knobIconUntil = millis() + KNOB_ICON_MS; if (!knobIconUntil) knobIconUntil = 1; haptic.play(H_TICK); dirty = true; } }
   wasPressed = pressed;
 
   int32_t d; noInterrupts(); d = knobSteps; knobSteps = 0; interrupts();
@@ -1528,6 +1557,7 @@ void loop() {
   }
 
   // keep the "age" column current: refresh every 15 s while the list is showing
+  if (knobIconUntil && (int32_t)(millis() - knobIconUntil) >= 0) { knobIconUntil = 0; dirty = true; }     // take the knob icon away again
   static uint32_t lastAge = 0;
   if ((stView == 0 || stView == 3) && millis() - lastAge > 15000) { lastAge = millis(); dirty = true; }
   static uint32_t lastFade = 0;
