@@ -35,6 +35,7 @@ static void rxApply();
 #include "clock.h"
 #include "ubx.h"
 #include "ui_icons.h"
+#include "chase.h"
 #include "gpsduty.h"
 #include <esp_task_wdt.h>
 #include <esp_system.h>
@@ -244,6 +245,7 @@ static const char *MODE_NAME[] = {"ZOOM", "PAN W-E", "PAN N-S", "STATIONS"};
 static int stView = 0;
 static bool sortByDistance = true;          // S key: nearest first, or most recently heard first
 static char selCall[10] = "";               // selected station (kept by call sign so it survives re-sorting)
+static Chase chase;                          // chase mode (chase.h): off after every restart
 static const int LIST_W = 130;
 // The four views of the L key, named: shown as a pop-up when you switch and permanently in the top line.
 //   LIST+MAP      list of heard stations on the left, map on the right, station icons on the map
@@ -502,8 +504,8 @@ static void drawFullList(lgfx::LovyanGFX &D, int W, int H) {
 }
 
 // ---- Main menu (Backspace on the map): knob turn = move, press = choose, long press or Backspace = close ----
-enum MenuAct { MA_NONE, MA_MESSAGES, MA_SETUP, MA_BEACON, MA_AUTO, MA_POWEROFF_ASK, MA_POWEROFF_YES, MA_NO, MA_CLOSE, MA_HELP };
-struct MainMenu { bool on = false; int sel = 0, n = 0; char label[7][32]; MenuAct act[7]; char title[34] = "Menu"; char info1[56] = "", info2[56] = "", info3[56] = ""; };
+enum MenuAct { MA_NONE, MA_MESSAGES, MA_SETUP, MA_BEACON, MA_AUTO, MA_POWEROFF_ASK, MA_POWEROFF_YES, MA_NO, MA_CLOSE, MA_HELP, MA_CHASE_ASK, MA_CHASE_ME, MA_CHASE_STATION, MA_CHASE_OFF };
+struct MainMenu { bool on = false; int sel = 0, n = 0; char label[8][32]; MenuAct act[8]; char title[34] = "Menu"; char info1[56] = "", info2[56] = "", info3[56] = ""; };
 static MainMenu mainMenu;
 static bool helpOn = false; static int helpPage = 0;       // Help screen: page 0 = keys, page 1 = QR code for the SD card guide
 static const char *HELP_URL = "https://github.com/radiohound/lora-aprs-pager";
@@ -514,7 +516,7 @@ static void drawHelp(lgfx::LovyanGFX &D) {
   D.setTextColor(TFT_WHITE);
   if (helpPage == 0) {
     static const char *L[] = {
-      "Backspace   menu: battery, beacon, setup, power off",
+      "Backspace   menu: chase mode, beacon, setup, power off",
       "M           messages          Enter   phone setup",
       "L           next view: list + map, map, map only, full list",
       "S           list order: nearest first or newest first",
@@ -542,7 +544,7 @@ static void drawHelp(lgfx::LovyanGFX &D) {
     D.setCursor(230, 196); D.print("lora-aprs-pager");
   }
 }
-static void mmAdd(const char *t, MenuAct a) { if (mainMenu.n < 7) { strncpy(mainMenu.label[mainMenu.n], t, 31); mainMenu.label[mainMenu.n][31] = 0; mainMenu.act[mainMenu.n++] = a; } }
+static void mmAdd(const char *t, MenuAct a) { if (mainMenu.n < 8) { strncpy(mainMenu.label[mainMenu.n], t, 31); mainMenu.label[mainMenu.n][31] = 0; mainMenu.act[mainMenu.n++] = a; } }
 static void drawMainMenu(lgfx::LovyanGFX &D) {
   bool info = mainMenu.info1[0] != 0; int top = info ? (mainMenu.info3[0] ? 58 : 48) : 22;
   int h = top + 4 + mainMenu.n * 18, w = info ? 340 : 260, x = (480 - w) / 2, y = (222 - h) / 2;
@@ -632,10 +634,11 @@ static void render() {
       hasIcon[i] = icon;
       if (!icon) { D.fillCircle(mk[i].ix, mk[i].iy, 4, TFT_BLACK); D.fillCircle(mk[i].ix, mk[i].iy, 3, TFT_YELLOW); }      // no icon for this code: plain dot
       if (isSel) D.drawCircle(mk[i].ix, mk[i].iy, icon ? 15 : 8, TFT_WHITE);
+      if (chase.on && strcmp(mk[i].st->call, chase.call) == 0) { D.drawCircle(mk[i].ix, mk[i].iy, 17, TFT_RED); D.drawCircle(mk[i].ix, mk[i].iy, 18, TFT_RED); }   // the one being chased
     }
     for (int i = 0; i < nm; i++) {
       int w = 6 * (int)strlen(mk[i].st->call), off = hasIcon[i] ? 14 : 6, x = mk[i].ix + off, y = mk[i].iy - 4;   // x, y: where the text starts
-      if (x + w + 2 > (y < ICON_COL_BOTTOM ? W - ICON_COL_W : W)) x = mk[i].ix - off - w - 1;                                    // no room on the right: put it on the left
+      if (x + w + 2 > (y < (chase.on ? ICON_COL_BOTTOM + 28 : ICON_COL_BOTTOM) ? W - ICON_COL_W : W)) x = mk[i].ix - off - w - 1;                                    // no room on the right: put it on the left
       for (int tries = 0; tries < 8; tries++) {                                          // slide down until the box overlaps no other label
         bool hit = false;
         for (int k = 0; k < nl; k++) if (x - 2 < lx[k] + lw[k] && lx[k] < x - 2 + w + 3 && y - 2 < ly[k] + 11 && ly[k] < y - 2 + 11) { hit = true; break; }
@@ -659,6 +662,19 @@ static void render() {
   D.setTextColor(TFT_WHITE, TFT_BLACK); D.setTextSize(1);
   if (notice && millis() < noticeUntil) { D.setCursor(x0 + 2, 2); D.printf(" %s ", notice); }     // the top row is only used for passing notices
   else if (demoMode) { D.setCursor(x0 + 2, 2); D.print(" DEMO MODE "); }
+  else if (chase.on) {
+    char t[72];
+    if (chase.followingMe()) snprintf(t, sizeof t, "FOLLOW ME%s", gps.fix.valid ? "" : "  no GPS fix");
+    else if (!chase.have) snprintf(t, sizeof t, "FOLLOW %s  no position yet", chase.call);
+    else {
+      char age[8]; geoFmtAge(age, sizeof age, (millis() - chase.heard) / 1000);
+      if (gps.fix.valid) { char ds[10]; geoFmtDist(ds, sizeof ds, geoDistKm(gps.fix.lat, gps.fix.lon, chase.lat, chase.lon)); double b = geoBearing(gps.fix.lat, gps.fix.lon, chase.lat, chase.lon);
+                           snprintf(t, sizeof t, "FOLLOW %s  %s %.0f %s  heard %s", chase.call, ds, b, geoCompass(b), age); }
+      else snprintf(t, sizeof t, "FOLLOW %s  heard %s  (no GPS fix)", chase.call, age);
+    }
+    D.setCursor(x0 + 2, 2); D.printf(" %s%s ", t, chase.paused ? "  PAUSED" : "");
+  }
+  if (chase.on) drawUiIcon(D, UI_LOCK, W - ICON_COL_W / 2, 164);
   {
     int ix = W - ICON_COL_W / 2;
     drawUiIcon(D, gps.fix.valid ? UI_GPS_FIX : UI_GPS_NONE, ix, 33);
@@ -1009,6 +1025,21 @@ static bool screenTouch() {
   if (screenState) { screenState = 0; powerApply(); tft.setBrightness(S.brightness); dirty = true; }
   return wasOff;
 }
+static void toPx(double lat, double lon, int z, double &x, double &y);
+// Chase mode, every pass: remember where the followed station is, move the map when it has moved a pixel or more, warn when the battery is low.
+static void chaseTick() {
+  if (!chase.on) return;
+  if (!chase.followingMe()) for (auto &s : stations) if (s.used && strcmp(s.call, chase.call) == 0) { chase.have = true; chase.lat = s.lat; chase.lon = s.lon; chase.heard = s.heard; break; }
+  if (int w = chaseBatteryWarning(chase, batPct, batCharging)) { say(w == 10 ? "Battery 10 %: chase mode is using it fast" : "Battery 20 %: chase mode is using it fast"); haptic.play(H_ERROR); }
+  bool wasPaused = chase.paused;
+  if (!chaseFollowing(chase, millis())) return;
+  if (wasPaused) dirty = true;
+  bool me = chase.followingMe();
+  if (me ? !gps.fix.valid : !chase.have) return;
+  double lat = me ? gps.fix.lat : chase.lat, lon = me ? gps.fix.lon : chase.lon, ax, ay, bx, by;
+  toPx(lat, lon, ZOOMS[zi], ax, ay); toPx(clat, clon, ZOOMS[zi], bx, by);
+  if (fabs(ax - bx) >= 1.0 || fabs(ay - by) >= 1.0) { clat = lat; clon = lon; dirty = true; }
+}
 static void screenTick() {
   if (panelRetryUntil && screenState != 2) {                  // the panel's sleep-out, repeated for 3 s after a wake (harmless when it is already out)
     if ((int32_t)(millis() - panelRetryUntil) >= 0) panelRetryUntil = 0;
@@ -1017,6 +1048,7 @@ static void screenTick() {
   static bool slow = false;                                  // processor at 80 MHz when nothing was touched for 5 s, 240 MHz while in use (radio, GPS and beacons do not need more)
   bool wantSlow = millis() - lastActivity > 5000;
   if (wantSlow != slow) { slow = wantSlow; setCpuFrequencyMhz(slow ? 80 : 240); }
+  if (chase.on) { if (screenState) { screenState = 0; powerApply(); tft.setBrightness(S.brightness); dirty = true; } return; }   // never dims or switches off
   if (!S.dimSec && !S.offSec) { if (screenState) { screenState = 0; tft.setBrightness(S.brightness); } return; }
   uint32_t idle = (millis() - lastActivity) / 1000;
   int want = (S.offSec && idle >= (uint32_t)S.offSec) ? 2 : ((S.dimSec && idle >= (uint32_t)S.dimSec) ? 1 : 0);
@@ -1252,6 +1284,7 @@ static void openMainMenu() {
       else snprintf(mainMenu.info2, sizeof mainMenu.info2, "Battery, screen off:  USB was plugged in");
     } else { strcpy(mainMenu.info1, "Battery current: no reading from the gauge"); } }
   mmAdd("Messages", MA_MESSAGES); mmAdd("Phone setup", MA_SETUP); mmAdd("Beacon now", MA_BEACON);
+  mmAdd(chase.on ? "Chase mode is ON: turn off" : "Chase mode...", chase.on ? MA_CHASE_OFF : MA_CHASE_ASK);
   mmAdd(autoBeacon ? "Auto-beacon is ON: turn off" : "Auto-beacon is OFF: turn on", MA_AUTO);
   mmAdd("Help: keys and map card", MA_HELP); mmAdd("Power off", MA_POWEROFF_ASK); mmAdd("Close menu", MA_CLOSE);
   dirty = true;
@@ -1264,6 +1297,18 @@ static void mainMenuAct(MenuAct a) {
     case MA_SETUP: startSetup(); drawSetup(); break;
     case MA_BEACON: if (beacon.manualOk(millis())) sendBeacon(); else say("Wait: beacon just sent"); break;
     case MA_AUTO: autoBeacon = !autoBeacon; if (autoBeacon) beacon.start(millis()); say(autoBeacon ? "Auto beacon ON" : "Auto beacon off"); break;
+    case MA_CHASE_ASK: {
+      mainMenu.n = 0; mainMenu.sel = 0; mainMenu.on = true; strcpy(mainMenu.title, "Chase mode: keep the screen on?");
+      strcpy(mainMenu.info1, "The screen will not dim or switch off."); strcpy(mainMenu.info2, "This uses much more battery."); mainMenu.info3[0] = 0;
+      mmAdd("No, cancel", MA_NO); mmAdd("Follow me", MA_CHASE_ME);                     // No first: a stray press cannot switch it on
+      if (nOrd && selCall[0]) { char t[32]; snprintf(t, sizeof t, "Follow %s", selCall); mmAdd(t, MA_CHASE_STATION); }
+      break; }
+    case MA_CHASE_ME: chaseStart(chase, nullptr); say(gps.fix.valid ? "Chase mode: following me" : "Chase mode: waiting for a GPS fix"); break;
+    case MA_CHASE_STATION:
+      chaseStart(chase, selCall);
+      for (auto &s : stations) if (s.used && strcmp(s.call, chase.call) == 0) { chase.have = true; chase.lat = s.lat; chase.lon = s.lon; chase.heard = s.heard; }
+      say("Chase mode on"); break;
+    case MA_CHASE_OFF: chaseStop(chase); screenTouch(); say("Chase mode off"); break;
     case MA_POWEROFF_ASK:
       mainMenu.n = 0; mainMenu.sel = 0; mainMenu.on = true; strcpy(mainMenu.title, "Power off the pager?");
       mmAdd("No, keep it on", MA_NO); mmAdd("Yes, power off", MA_POWEROFF_YES); break;      // No first: a stray press cannot switch it off
@@ -1275,6 +1320,7 @@ static void mainMenuAct(MenuAct a) {
 static void centerOnGps() {
   if (!gps.fix.valid) { haptic.play(H_ERROR); say("No GPS fix yet"); return; }
   clat = gps.fix.lat; clon = gps.fix.lon; haptic.play(H_CLICK); dirty = true;
+  if (chase.followingMe()) chase.paused = false; else chaseLook(chase, millis());
 }
 
 // Light sleep while the screen is off: the processor stops until the radio hears a packet (DIO1), a key or the knob moves, the GPS starts talking,
@@ -1458,7 +1504,7 @@ void loop() {
   if (setupMode) { setupTick(); return; }   // while the phone setup screen is open, nothing else runs (receiving still does)
 
   pstage(7);
-  screenTick(); gpsPosSave(); gpsWakeCheck(); gpsDuty();
+  screenTick(); gpsPosSave(); gpsWakeCheck(); gpsDuty(); chaseTick();
   { static uint32_t clkTickAt = 0; static int lastMin = -1, lastPct = -2; static bool lastChg = false;
     if (millis() - clkTickAt > 1000) {
       clkTickAt = millis(); clockTick();
@@ -1505,7 +1551,7 @@ void loop() {
     if (ignorePress) { if (!pressed) ignorePress = false; pressed = false; } }
   if (pressed && !wasPressed) { pressedAt = millis(); longDone = false; }
   if (pressed && !longDone && millis() - pressedAt >= 600) { longDone = true; if (helpOn) { helpOn = false; dirty = true; } else if (mainMenu.on) { mainMenu.on = false; dirty = true; haptic.play(H_CLICK); } else if (ui.active()) { ui.press(true); haptic.play(H_CLICK); if (!ui.active()) dirty = true; } else if (stView == 3) { stView = 0; haptic.play(H_CLICK); say(VIEW_NAME[0]); dirty = true; } else centerOnGps(); }
-  if (!pressed && wasPressed && !longDone) { if (helpOn) { helpOn = false; dirty = true; } else if (mainMenu.on) { haptic.play(H_CLICK); mainMenuAct(mainMenu.act[mainMenu.sel]); } else if (ui.active()) { ui.press(false); haptic.play(H_TICK); if (!ui.active()) dirty = true; } else if (stView == 3) { haptic.play(H_CLICK); ui.open(); ui.openCompose(selCall); } else { mode = nextMode(mode); knobIconUntil = millis() + KNOB_ICON_MS; if (!knobIconUntil) knobIconUntil = 1; haptic.play(H_TICK); dirty = true; } }
+  if (!pressed && wasPressed && !longDone) { if (helpOn) { helpOn = false; dirty = true; } else if (mainMenu.on) { haptic.play(H_CLICK); mainMenuAct(mainMenu.act[mainMenu.sel]); } else if (ui.active()) { ui.press(false); haptic.play(H_TICK); if (!ui.active()) dirty = true; } else if (stView == 3) { haptic.play(H_CLICK); ui.open(); ui.openCompose(selCall); } else { if (chase.paused) chaseLook(chase, millis()); mode = nextMode(mode); knobIconUntil = millis() + KNOB_ICON_MS; if (!knobIconUntil) knobIconUntil = 1; haptic.play(H_TICK); dirty = true; } }
   wasPressed = pressed;
 
   int32_t d; noInterrupts(); d = knobSteps; knobSteps = 0; interrupts();
@@ -1515,6 +1561,7 @@ void loop() {
   else if (d && ui.active()) { for (int i = 0, n = abs(d); i < n; i++) ui.knob(d > 0 ? 1 : -1); haptic.play(H_TICK); }
   else if (d) {
     haptic.play(H_TICK);
+    if (stView == 3 || mode != M_ZOOM) chaseLook(chase, millis());          // zooming keeps following
     if (stView == 3) {                               // full list: the knob moves the selection (up on the knob = up the list)
       lastKnobAt = millis();                         // and stops it following new packets for a while
       if (nOrd) {
@@ -1575,6 +1622,8 @@ void loop() {
 
   // keep the "age" column current: refresh every 15 s while the list is showing
   if (knobIconUntil && (int32_t)(millis() - knobIconUntil) >= 0) { knobIconUntil = 0; dirty = true; }     // take the knob icon away again
+  static uint32_t chaseDrawn = 0;
+  if (chase.on && millis() - chaseDrawn > 1000) { chaseDrawn = millis(); dirty = true; }
   static uint32_t lastAge = 0;
   if ((stView == 0 || stView == 3) && millis() - lastAge > 15000) { lastAge = millis(); dirty = true; }
   static uint32_t lastFade = 0;

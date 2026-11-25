@@ -53,6 +53,12 @@ def tx(c):
         d.arc([11 - r, 8 - r, 11 + r, 8 + r], -40, 40, fill=c, width=2)
     return im
 
+def lock():                              # padlock: chase mode is keeping the screen on
+    im, d = tile(18, 20)
+    d.arc([4, 1, 13, 14], 180, 360, fill=YE, width=3); d.rectangle([4, 7, 6, 10], fill=YE); d.rectangle([11, 7, 13, 10], fill=YE)
+    d.rectangle([2, 9, 15, 18], fill=YE); d.rectangle([8, 12, 9, 15], fill=BK)
+    return im
+
 def envelope():
     im, d = tile(22, 16)
     d.rectangle([1, 1, 20, 14], fill=WH)
@@ -76,7 +82,7 @@ def rows(im):
     return out
 
 ICONS = [('PAN_X', pan_x()), ('PAN_Y', pan_y()), ('ZOOM', zoom()), ('STATIONS', stations()),
-         ('GPS_FIX', gps(GR)), ('GPS_NONE', gps(GY)), ('TX_AUTO', tx(GR)), ('TX_OFF', tx(GY)), ('TX_NOW', tx(RD)), ('MAIL', envelope())]
+         ('GPS_FIX', gps(GR)), ('GPS_NONE', gps(GY)), ('TX_AUTO', tx(GR)), ('TX_OFF', tx(GY)), ('TX_NOW', tx(RD)), ('MAIL', envelope()), ('LOCK', lock())]
 text = '// Made by tools/make_ui_icons.py: do not edit by hand.\n#pragma once\n\nstruct UiIcon { int w, h; const char *const *rows; };\n'
 for name, im in ICONS:
     r = rows(im)
