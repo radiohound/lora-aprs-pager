@@ -11,8 +11,8 @@ import numpy as np
 from analyze_powertest import load_bins, find_markers, BIN_MS
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-PLAN = re.findall(r'^\s*\{"([^"]+)",\s*\d', open(os.path.join(HERE, '..', 'src', 'app', 'leaktest.h')).read().split('LT_PLAN[] = {')[1].split('};')[0], re.M)
-STEP_S, MARK_S, SKIP_S, PER = 25, 6, 5, 1000 // BIN_MS
+PLAN = re.findall(r'^\s*\{"([^"]+)",', open(os.path.join(HERE, '..', 'src', 'app', 'leaktest.h')).read().split('LT_PLAN[] = {')[1].split('};')[0], re.M)
+STEP_S, MARK_S, SKIP_S, PER = 28, 6, 8, 1000 // BIN_MS      # KEEP IN STEP WITH src/app/leaktest.h (LT_STEP_S)
 
 def read_number(win, thr):
     """Count the flashes in the first seconds of a step: runs above thr; 0.4 s or longer counts 5."""
@@ -50,7 +50,7 @@ def analyse(m, graph=None):
         seg = m[a + SKIP_S * PER: a + STEP_S * PER - PER // 2]
         med, avg = float(np.median(seg)), float(seg.mean())
         shift = med - base_sleep                          # a step that draws more also lifts its own flashes
-        got = read_number(m[a - PER // 4: a + SKIP_S * PER - PER // 2], (on + off) / 2 + max(0.0, min(shift, (on - off) / 3)))
+        got = read_number(m[a - PER // 4: a + 5 * PER - PER // 4], (on + off) / 2 + max(0.0, min(shift, (on - off) / 3)))
         ok = got == i + 1
         bad += not ok
         if name.startswith('BASE'):
@@ -61,6 +61,12 @@ def analyse(m, graph=None):
     bases = [r[3] for r in rows if r[1].startswith('BASE')]
     print(f"\nbaseline repeats: {', '.join(f'{b:.2f}' for b in bases)} mA (spread {max(bases) - min(bases):.2f})")
     print('every step number read back correctly' if not bad else f'{bad} step number(s) did NOT read back as expected: check the graph before trusting those rows')
+    end = t0 + len(PLAN) * STEP_S * PER                   # the end marker, then 30 s of deep sleep
+    deep = m[end + (MARK_S + 4) * PER: end + (MARK_S + 24) * PER]
+    if deep.size >= 15 * PER:
+        print(f'reference, deep sleep after the end marker (processor off, its pins released): median {np.median(deep):.2f} mA')
+    else:
+        print('the deep-sleep reference at the end was not recorded')
     if graph:
         draw(m, t0, rows, graph)
     return rows
