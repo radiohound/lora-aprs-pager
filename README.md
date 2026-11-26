@@ -138,7 +138,7 @@ This firmware **transmits** on 433.775 MHz (the LoRa APRS frequency) at up to 22
 
 With the screen off the pager used about 65 mA before the power work (fuel gauge), about 23 hours on the 1500 mAh cell. Now, on a power analyser,
 it **sleeps at about 19.5 mA** with the radio receiving, plus the GPS searches. With the pager still and the GPS searching about 5% of the
-time, that is an estimated **21 mA on average, about 2.5 to 3 days**. This is an estimate: a full run down of the battery has not been timed.
+time and a beacon every 10 minutes, that is an estimated **22 mA on average, about 2.4 to 2.9 days**. This is an estimate: a full run down of the battery has not been timed.
 With the screen on it draws about 70 mA dimmed and 96 mA bright (read during start-up).
 
 Two options in the phone setup are **off by default and still being tested**, and have not been tested together:
@@ -148,8 +148,8 @@ Two options in the phone setup are **off by default and still being tested**, an
 | Switch GPS power off between searches | sleep **11.9 mA** instead of 19.5 | long runs, moving, without motion wake |
 | Slower processor (40 MHz) while the screen is off | GPS searches about **39 mA** instead of 51.5 | GPS reliability over longer use |
 
-With the GPS option, the same pattern of searches would give an estimated 14 mA (about 3.8 to 4.5 days). In the one analyser run searches took
-about 20% of the time, which comes to about 20 mA; how long searches take depends on reception.
+With the GPS option, the same pattern of searches would give an estimated 14.5 mA (about 3.7 to 4.3 days). In the one analyser run searches took
+about 20% of the time, which comes to about 20.5 mA; how long searches take depends on reception.
 
 To save power now: let the screen time out (shorter is better), keep USB unplugged, lower the brightness, beacon less often, and use
 **Power off** (Backspace) when it will not be used for days. What was measured and how, including leaks that cost about 40 mA and how to avoid

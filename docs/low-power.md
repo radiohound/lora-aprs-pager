@@ -38,13 +38,13 @@ the power analyser runs.
 
 | Use | Current assumed | Days at full rated capacity | Days if 85% of it is usable |
 |---|---|---|---|
-| Still, screen off, normal settings, searching 5% | 21 mA | about 3.0 | about 2.5 |
-| Still, screen off, GPS supply off, searching 5% | 14 mA | about 4.5 | about 3.8 |
-| Still, screen off, GPS supply off, searching 20% (as in the analyser run) | 20 mA | about 3.1 | about 2.7 |
+| Still, screen off, normal settings, searching 5% | 22 mA | about 2.9 | about 2.4 |
+| Still, screen off, GPS supply off, searching 5% | 14.5 mA | about 4.3 | about 3.7 |
+| Still, screen off, GPS supply off, searching 20% (as in the analyser run) | 20.5 mA | about 3.0 | about 2.6 |
 | Moving 8 hours a day, screen off, normal settings | 28 mA in those hours (estimate) | about 2.7 | about 2.3 |
 | Still, screen on 8 hours a day, normal settings | 71 mA dimmed to 96 mA bright | about 1.4 to 1.7 | about 1.2 to 1.4 |
 
-The GPS supply option has not been tested while moving, so there is no estimate for it. For comparison, 65 mA all day was about 23 hours.
+The "still" rows include a beacon every 10 minutes at SF12 (about 2.6 s of transmitting, about 0.5 mA on average). The GPS supply option has not been tested while moving, so there is no estimate for it. For comparison, 65 mA all day was about 23 hours.
 The "moving" figure is for driving with a beacon about every 68 s: about 19 mA outside searches, about 5 mA for searches (13% of the time in a
 drive log) and about 5 mA for transmitting. The screen-on figures were read during start-up, depend on the brightness, and leave out beacons.
 Cold, battery age, weak GPS reception, messages and busy use all change these figures.
@@ -289,9 +289,9 @@ packet counts before relying on it. Only with the screen off; with the screen on
 From their `variants/esp32s3/tlora-pager` and `src/sleep.cpp` (read 2026-11-23, nothing measured):
 
 * `USE_POWERSAVE` with `SLEEP_TIME 120` and light sleep in their power state machine, using the same wake sources as ours.
-* Their pager init leaves the GPS, keyboard, SD, header and haptic rails on and only keeps the amplifier off. They do not cut rails or
-  float pins, so they very likely carry the leaks described above. We have not measured their firmware on this pager, so we make no
-  claim about the difference.
+* Their pager init leaves the GPS, keyboard, SD, header and haptic rails on and keeps the amplifier off. The large leaks described above
+  came from driving the pins of a chip whose supply was switched off, so leaving these supplies on does not by itself cause them. We have
+  not measured their firmware on this pager, so we make no claim about how much it draws.
 * Related pager issues: [#12074](https://github.com/meshtastic/firmware/pull/12074) (encoder noise causing watchdog resets on
   battery) and [#11929](https://github.com/meshtastic/firmware/pull/11929) (the GPS reset line must be driven).
 
