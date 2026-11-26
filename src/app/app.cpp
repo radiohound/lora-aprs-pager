@@ -862,7 +862,7 @@ static void saveSettings(const PagerSettings &x) {
   p.putString("txdbm", String(x.txDbm)); p.putString("moving", String(x.movingSec)); p.putString("stationary", String(x.stationaryMin));
   p.putString("movem", String(x.moveMetres)); p.putString("auto", x.autoAtBoot ? "1" : "0"); p.putString("haptic", x.haptic ? "1" : "0");
   p.putString("bright", String(x.brightness)); p.putString("tz", String(x.utcOffset)); p.putString("dst", x.usDst ? "1" : "0"); p.putString("baticon", x.batIcon ? "1" : "0"); p.putString("dim", String(x.dimSec)); p.putString("off", String(x.offSec));
-  p.putString("gpssl", x.gpsSleep ? "1" : "0"); p.putString("gpsmv", String(x.gpsMoveSec)); p.putString("gpsst", String(x.gpsStillMin)); p.putString("gpsmo", x.gpsMotion ? "1" : "0"); p.putString("gpsbk", String(x.gpsBackstopMin)); p.putString("rxd", x.rxDuty ? "1" : "0"); p.end();
+  p.putString("gpssl", x.gpsSleep ? "1" : "0"); p.putString("gpsmv", String(x.gpsMoveSec)); p.putString("gpsst", String(x.gpsStillMin)); p.putString("gpsmo", x.gpsMotion ? "1" : "0"); p.putString("gpsbk", String(x.gpsBackstopMin)); p.putString("slow40", x.slow40 ? "1" : "0"); p.putString("rxd", x.rxDuty ? "1" : "0"); p.end();
 }
 static PagerSettings loadSettings() {
   PagerSettings x; Preferences p; p.begin("pgr-aprs", true);
@@ -883,6 +883,7 @@ static bool setupMode = false;
 static bool pwrPanel = true, pwrSd = true;                  // true = this saving is active
 static bool pwrGps = true, pwrSleep = true;                 // pwrSleep: light sleep between events while the screen is off
 static bool gpsEverFix = false;                                      // any GPS fix since start-up
+static uint32_t nmeaOk[2] = {0, 0}, nmeaBad[2] = {0, 0};           // GPS lines read, [0] at 80 MHz or more, [1] below (PW prints them)
 static uint32_t gpsWinBytes = 0;                                       // characters the GPS has sent during this wake-up (for the GPS window log)
 static uint32_t lastGpsByte = 0;                                  // when the GPS last sent a character (light sleep waits until it has been quiet a moment)
 // Position and time hint: after a power-up the receiver starts with an empty head. Tell it roughly where it is (the last saved fix) and the time (from the RTC), and it finds the sky faster.
@@ -1153,9 +1154,17 @@ static void powerApply() {
   }
   if (wSd && !aSd) { SD.end(); xp.output(XP_SD_EN, LOW); pinMode(PIN_SD_CS, INPUT); sdUnpowered = true; aSd = true; }
 }
+static bool usbPresent();
+// One place that changes the processor speed. The GPS serial port's baud rate is set again afterwards, as its clock may have changed.
+static void cpuSet(int mhz) {
+  if ((int)getCpuFrequencyMhz() == mhz) return;
+  setCpuFrequencyMhz(mhz);
+  if (!gpsSleeping) Serial1.updateBaudRate(GPS_BAUD);
+}
 static bool screenTouch() {
   if (screenState == 2 && asleepN >= 2) { asleepAvg = (int)(asleepSum / asleepN); asleepHave = true; }                                // returns true when the screen was off: the caller then ignores that key press
   lastActivity = millis(); bool wasOff = screenState == 2; plog('t', wasOff, screenState);
+  if (getCpuFrequencyMhz() < 80) cpuSet(80);                 // back to full bus speed before the card and the display are woken
   if (screenState) { screenState = 0; powerApply(); tft.setBrightness(S.brightness); dirty = true; }
   return wasOff;
 }
@@ -1179,9 +1188,12 @@ static void screenTick() {
     if ((int32_t)(millis() - panelRetryUntil) >= 0) panelRetryUntil = 0;
     else if (millis() - panelRetryAt > 500) { panelRetryAt = millis(); tft.wakeup(); tft.setBrightness(S.brightness); dirty = true; plog('x'); }
   }
-  static bool slow = false;                                  // processor at 80 MHz when nothing was touched for 5 s, 240 MHz while in use (radio, GPS and beacons do not need more)
-  bool wantSlow = millis() - lastActivity > 5000;
-  if (wantSlow != slow) { slow = wantSlow; setCpuFrequencyMhz(slow ? 80 : 240); }
+  // Processor speed: 240 MHz while in use, 80 MHz when nothing was touched for 5 s. With the setting "slow40", 40 MHz while the screen is off,
+  // but not with USB power (the USB port) or in phone setup (WiFi). Measured with the GPS on: 52 mA at 80, 42 at 40; at 20 MHz GPS data broke.
+  static bool usbIn = true; static uint32_t usbAt = 0;
+  if (!(S.slow40 && screenState == 2)) { usbIn = true; usbAt = 0; }
+  else if (!usbAt || millis() - usbAt > 2000) { usbAt = millis() | 1; usbIn = usbPresent(); }
+  cpuSet(millis() - lastActivity <= 5000 ? 240 : ((S.slow40 && screenState == 2 && !setupMode && !demoMode && !usbIn) ? 40 : 80));
   if (chase.keepScreen) { if (screenState) { screenState = 0; powerApply(); tft.setBrightness(S.brightness); dirty = true; } return; }   // never dims or switches off
   if (!S.dimSec && !S.offSec) { if (screenState) { screenState = 0; tft.setBrightness(S.brightness); } return; }
   uint32_t idle = (millis() - lastActivity) / 1000;
@@ -1584,7 +1596,9 @@ void loop() {
   while (Serial1.available()) {
     lastGpsByte = millis(); gpsWinBytes++;
     if (demoMode) { Serial1.read(); continue; }                // demo: the real GPS is ignored
-    if (!gps.feed((char)Serial1.read())) continue;
+    char gc = (char)Serial1.read(); unsigned long badBefore = gps.bad; bool gpsUpdate = gps.feed(gc);
+    if (gc == '\n') { int k = getCpuFrequencyMhz() < 80; if (gps.bad != badBefore) nmeaBad[k]++; else nmeaOk[k]++; }
+    if (!gpsUpdate) continue;
     if (gps.fix.valid) gpsEverFix = true;
     // only redraw when my dot would move at least a pixel at this zoom, or the fix appeared/vanished
     static bool lastValid = false; static double lastX = 0, lastY = 0;
@@ -1655,6 +1669,8 @@ void loop() {
             for (int k = 0; k < MOT_KINDS; k++) Serial.printf(" %s %lu%s,", MOT_NAME[k], (unsigned long)motionCount[k], motionAvail[k] ? "" : " (n/a)");
             Serial.println();
             rstHistPrint();
+            Serial.printf("slow processor setting %s; GPS lines at 80+ MHz: %lu good, %lu bad; below 80 MHz: %lu good, %lu bad\n", S.slow40 ? "on" : "off",
+                          (unsigned long)nmeaOk[0], (unsigned long)nmeaBad[0], (unsigned long)nmeaOk[1], (unsigned long)nmeaBad[1]);
             Serial.printf("auto beacon %s, restored %d time(s) since the last 30 min stable run\n", autoBeacon ? "on" : "off", plogRtc.autoRestores); }
             for (int i = 0; i < n; i++) { PEv &e = plogBuf[(first + i) % 96]; Serial.printf("  %9lu ms  %c  %d %d\n", (unsigned long)e.ms, e.tag, e.a, e.b); }
           }

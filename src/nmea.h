@@ -18,11 +18,13 @@ class NmeaParser {
 public:
   NmeaFix fix;
   unsigned long lines = 0;      // complete lines seen (alive check)
+  unsigned long bad = 0;        // lines that are not a sentence with a good checksum (damaged or cut off)
   // Feed one character; returns true when a position update was just parsed.
   bool feed(char c) {
     if (c == '\r') return false;
     if (c != '\n') { if (_n < sizeof _l - 1) _l[_n++] = c; return false; }
     _l[_n] = 0; _n = 0; lines++;
+    if (_l[0] && !checksumOk(_l)) bad++;
     return parse(_l);
   }
   static bool checksumOk(const char *s) {
