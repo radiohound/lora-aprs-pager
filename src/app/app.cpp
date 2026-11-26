@@ -788,6 +788,9 @@ void setup() {
   plogInit();
   esp_task_wdt_deinit(); esp_task_wdt_init(30, true); esp_task_wdt_add(NULL);     // if the main loop stops for 30 s the pager resets itself (and the log survives)
   S = loadSettings();
+#ifdef FORCE_SLOW40
+  S.slow40 = true;                          // test builds only: the 40 MHz setting on without the phone page (a pager with no keyboard)
+#endif
   M.setCall(S.call); msgLoad(); M.restoreTimers(millis()); M.startIds(esp_random());
   Wire.begin(PIN_SDA, PIN_SCL, 400000);
   rtcRead();                                // the time the RTC chip kept, until GPS gives a better one
