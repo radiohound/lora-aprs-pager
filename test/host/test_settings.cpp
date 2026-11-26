@@ -5,7 +5,7 @@
 static int fails = 0;
 static void expect(bool c, const char *w) { if (!c) { fails++; printf("FAIL: %s\n", w); } }
 using M = std::map<std::string, std::string>;
-static M good() { return {{"call","k6atv-6"},{"path","wide1-1"},{"table","/"},{"sym","["},{"comment","T-LoRa Pager"},{"txdbm","20"},{"moving","60"},{"stationary","10"},{"movem","150"},{"auto","0"},{"haptic","1"},{"bright","160"},{"tz","-8"},{"dst","1"},{"baticon","1"},{"dim","60"},{"off","300"},{"gpssl","1"},{"gpsmv","60"},{"gpsst","5"},{"gpsmo","0"},{"gpsbk","60"},{"rxd","0"},{"slow40","0"}}; }
+static M good() { return {{"call","k6atv-6"},{"path","wide1-1"},{"table","/"},{"sym","["},{"comment","T-LoRa Pager"},{"txdbm","20"},{"moving","60"},{"stationary","10"},{"movem","150"},{"auto","0"},{"haptic","1"},{"bright","160"},{"tz","-8"},{"dst","1"},{"baticon","1"},{"dim","60"},{"off","300"},{"gpssl","1"},{"gpsmv","60"},{"gpsst","5"},{"gpsmo","0"},{"gpsbk","60"},{"rxd","0"},{"slow40","0"},{"gpsoff","0"}}; }
 static bool parse(const M &m, PagerSettings &s, std::string &err) { return settingsParse([&](const char *k, std::string &v) { auto i = m.find(k); if (i == m.end()) return false; v = i->second; return true; }, s, err); }
 int main() {
   PagerSettings s; std::string err;
@@ -36,7 +36,7 @@ int main() {
       PagerSettings d2; expect(!d2.gpsMotion && d2.gpsBackstopMin == 60, "defaults: motion wake off, 60 min backstop"); }
     PagerSettings d; expect(d.gpsSleep && d.gpsMoveSec == 60 && d.gpsStillMin == 5, "defaults: GPS sleeps, 60 s moving, 5 min still"); }
   { // a pager saved by the first release has none of the later settings: they must read as defaults and everything else must load
-    M old = good(); for (const char *k : {"tz", "dst", "baticon", "dim", "off", "gpssl", "gpsmv", "gpsst", "gpsmo", "gpsbk", "rxd", "slow40"}) old.erase(k);
+    M old = good(); for (const char *k : {"tz", "dst", "baticon", "dim", "off", "gpssl", "gpsmv", "gpsst", "gpsmo", "gpsbk", "rxd", "slow40", "gpsoff"}) old.erase(k);
     PagerSettings t; std::string e;
     bool ok = settingsParse([&](const char *k, std::string &v) { auto i = old.find(k); if (i != old.end()) { v = i->second; return true; } return settingsLaterDefault(k, v); }, t, e);
     expect(ok && std::string(t.call) == "K6ATV-6" && t.gpsSleep && t.gpsMoveSec == 60 && t.gpsStillMin == 5 && t.offSec == 300 && t.dimSec == 60 && t.utcOffset == -8 && t.usDst && t.batIcon, "settings saved by an older version load with the defaults for the new ones");
@@ -52,8 +52,11 @@ int main() {
     t.table = '\\'; j = settingsToJson(t); expect(j.find("\"table\":\"\\\\\"") != std::string::npos, "JSON escapes a backslash table"); }
   expect(std::string(PagerSettings().call) == "N0CALL", "default call is N0CALL");
   { M m4 = good(); m4["slow40"] = "1"; PagerSettings u4; std::string e4; expect(parse(m4, u4, e4) && u4.slow40, "slow processor setting parsed");
-    std::string j4 = settingsToJson(u4); expect(j4.find("\"slow40\":1}") != std::string::npos, "JSON carries it, and is not cut off");
+    std::string j4 = settingsToJson(u4); expect(j4.find("\"slow40\":1,") != std::string::npos, "JSON carries it");
     PagerSettings d4; expect(!d4.slow40, "slow processor is off by default"); }
+  { M m5 = good(); m5["gpsoff"] = "1"; PagerSettings u5; std::string e5; expect(parse(m5, u5, e5) && u5.gpsPowerOff, "GPS power off setting parsed");
+    std::string j5 = settingsToJson(u5); expect(j5.find("\"gpsoff\":1}") != std::string::npos, "JSON carries it, and is not cut off");
+    PagerSettings d5; expect(!d5.gpsPowerOff, "GPS power off is off by default"); }
   printf(fails ? "%d FAILED\n" : "all passed\n", fails);
   return fails != 0;
 }

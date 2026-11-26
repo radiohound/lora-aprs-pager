@@ -791,6 +791,9 @@ void setup() {
 #ifdef FORCE_SLOW40
   S.slow40 = true;                          // test builds only: the 40 MHz setting on without the phone page (a pager with no keyboard)
 #endif
+#ifdef FORCE_GPSOFF
+  S.gpsPowerOff = true;                     // test builds only: GPS power off between searches, on without the phone page
+#endif
   M.setCall(S.call); msgLoad(); M.restoreTimers(millis()); M.startIds(esp_random());
   Wire.begin(PIN_SDA, PIN_SCL, 400000);
   rtcRead();                                // the time the RTC chip kept, until GPS gives a better one
@@ -865,7 +868,7 @@ static void saveSettings(const PagerSettings &x) {
   p.putString("txdbm", String(x.txDbm)); p.putString("moving", String(x.movingSec)); p.putString("stationary", String(x.stationaryMin));
   p.putString("movem", String(x.moveMetres)); p.putString("auto", x.autoAtBoot ? "1" : "0"); p.putString("haptic", x.haptic ? "1" : "0");
   p.putString("bright", String(x.brightness)); p.putString("tz", String(x.utcOffset)); p.putString("dst", x.usDst ? "1" : "0"); p.putString("baticon", x.batIcon ? "1" : "0"); p.putString("dim", String(x.dimSec)); p.putString("off", String(x.offSec));
-  p.putString("gpssl", x.gpsSleep ? "1" : "0"); p.putString("gpsmv", String(x.gpsMoveSec)); p.putString("gpsst", String(x.gpsStillMin)); p.putString("gpsmo", x.gpsMotion ? "1" : "0"); p.putString("gpsbk", String(x.gpsBackstopMin)); p.putString("slow40", x.slow40 ? "1" : "0"); p.putString("rxd", x.rxDuty ? "1" : "0"); p.end();
+  p.putString("gpssl", x.gpsSleep ? "1" : "0"); p.putString("gpsmv", String(x.gpsMoveSec)); p.putString("gpsst", String(x.gpsStillMin)); p.putString("gpsmo", x.gpsMotion ? "1" : "0"); p.putString("gpsbk", String(x.gpsBackstopMin)); p.putString("slow40", x.slow40 ? "1" : "0"); p.putString("gpsoff", x.gpsPowerOff ? "1" : "0"); p.putString("rxd", x.rxDuty ? "1" : "0"); p.end();
 }
 static PagerSettings loadSettings() {
   PagerSettings x; Preferences p; p.begin("pgr-aprs", true);
@@ -1064,6 +1067,17 @@ static void gpsWinInfo(int moved, uint32_t nextMs) {
   g.movedM = moved < 0 ? 65535 : (uint16_t)moved; g.nextS = (uint16_t)std::min<uint32_t>(nextMs / 1000, 65535);
 }
 static void gpsWinLogWake(BEv &e) { e.d = (uint16_t)gpsRewakes; e.e = (uint16_t)std::min<uint32_t>(gpsFirstDataMs, 65535); }
+// Switching the GPS supply off ("gpsPowerOff"): in the leak test the GPS in backup mode drew 7.7 mA more than with its supply off (why is not
+// known). Its backup supply (V_BCKP, from the always-powered clock supply) stays on and keeps the satellite data and time, so it can start
+// "hot". With the supply off its lines must not be driven (u-blox hardware backup mode): all three are released.
+static bool gpsRailOff = false;
+static void gpsPowerCut() {
+  Serial1.flush(); Serial1.end();
+  pinMode(PIN_GPS_RX, INPUT); pinMode(PIN_GPS_TX, INPUT); pinMode(PIN_GPS_PPS, INPUT);
+  xp.input(XP_GPS_RST);                       // released, NOT driven low: a low pulse on RESET_N resets the receiver (and may drop its saved data)
+  xp.output(XP_GPS_EN, LOW); gpsRailOff = true;
+}
+static void gpsPowerRestore() { xp.output(XP_GPS_EN, HIGH); delay(5); xp.output(XP_GPS_RST, HIGH); delay(5); gpsRailOff = false; }   // reset goes straight to high, once powered
 static void gpsBackup(bool gotFix) {
   blogGpsWindow(gotFix, millis() - gpsOnAt);
   gpsAwaiting = false;
@@ -1073,13 +1087,17 @@ static void gpsBackup(bool gotFix) {
   if (gotFix) gpsMisses = 0;
   else { if (gpsMisses < 100) gpsMisses++; gpsIntervalMs = gpsMissSleep(gpsEverFix, gpsMisses, S.gpsStillMin); }
   gpsWinInfo(moved, gpsIntervalMs);
-  uint8_t f[24]; ubxSend(f, ubxBackup(f)); Serial1.flush(); delay(20);
-  // With the GPS in backup its serial line floats. The processor's serial port then sees noise and every restart so far was an interrupt-watchdog reset inside light sleep
-  // about 12 to 14 s after this point (suspected cause, not proven). So: close the port, hold both lines idle-high, reopen at wake-up.
-  Serial1.end(); pinMode(PIN_GPS_RX, INPUT_PULLUP); pinMode(PIN_GPS_TX, OUTPUT); digitalWrite(PIN_GPS_TX, HIGH);
+  if (S.gpsPowerOff) gpsPowerCut();
+  else {
+    uint8_t f[24]; ubxSend(f, ubxBackup(f)); Serial1.flush(); delay(20);
+    // With the GPS in backup its serial line floats. The processor's serial port then sees noise and every restart so far was an interrupt-watchdog reset inside light sleep
+    // about 12 to 14 s after this point (suspected cause, not proven). So: close the port, hold both lines idle-high, reopen at wake-up.
+    Serial1.end(); pinMode(PIN_GPS_RX, INPUT_PULLUP); pinMode(PIN_GPS_TX, OUTPUT); digitalWrite(PIN_GPS_TX, HIGH);
+  }
   gpsSleeping = true; gpsWakeAt = millis() + gpsIntervalMs; plog('b', (int)(gpsIntervalMs / 1000), gpsAd.still);
 }
 static void gpsWake() {
+  if (gpsRailOff) gpsPowerRestore();                          // power first, then the serial port
   Serial1.begin(GPS_BAUD, SERIAL_8N1, PIN_GPS_RX, PIN_GPS_TX);
   gpsSendWake();
   gpsSleeping = false; gpsOnAt = millis(); gpsEpochAtOn = gps.fix.epoch; gpsWinBytes = 0; plog('g');
@@ -1678,6 +1696,7 @@ void loop() {
             for (int k = 0; k < MOT_KINDS; k++) Serial.printf(" %s %lu%s,", MOT_NAME[k], (unsigned long)motionCount[k], motionAvail[k] ? "" : " (n/a)");
             Serial.println();
             rstHistPrint();
+            Serial.printf("GPS power off between searches: %s\n", S.gpsPowerOff ? "on" : "off");
             Serial.printf("slow processor setting %s; GPS lines at 80+ MHz: %lu good, %lu bad; below 80 MHz: %lu good, %lu bad\n", S.slow40 ? "on" : "off",
                           (unsigned long)nmeaOk[0], (unsigned long)nmeaBad[0], (unsigned long)nmeaOk[1], (unsigned long)nmeaBad[1]);
             Serial.printf("auto beacon %s, restored %d time(s) since the last 30 min stable run\n", autoBeacon ? "on" : "off", plogRtc.autoRestores); }
