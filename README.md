@@ -49,7 +49,7 @@ firmware's demo mode (`DEMO MODE` is shown on the screen, and nothing is transmi
   powered down; the GPS sleeps and wakes now and then for a fix, **adaptively**: every minute while you are moving, and every few minutes once two fixes in a row
   show you have not moved (or it cannot see the sky). Both times, and an off switch, are in the phone setup ("Battery, screen off"). With **motion wake** (off by default, a checkbox in the phone setup) the motion sensor cuts the long GPS sleep short when you start moving
   (tested walking, not yet driving). A beacon sent while
-  the screen is off uses the last fix, so it can be a little old. Measured on one pager: **about 24 mA with the screen off, against about 65 mA before** (see [Battery life](#battery-life)). USB disables
+  the screen is off uses the last fix, so it can be a little old. Measured on one pager with a power analyser: it **sleeps at about 19.5 mA** with the screen off and the radio receiving (about 65 mA before the power work, read from the fuel gauge); GPS searches add to that (see [Battery life](#battery-life)). Two options, off by default and still being tested, reduce it further. USB disables
   the sleep, so the serial port stays up.
 - **Help screen.** Backspace, then **Help**: the keys and knob actions, and a QR code for the map SD card guide (turn the knob for the second page).
 - **Mic-E** position packets (used by many handheld and mobile radios) are decoded, including blanked-digit position ambiguity; checked against
@@ -132,13 +132,24 @@ This firmware **transmits** on 433.775 MHz (the LoRa APRS frequency) at up to 22
 
 ### Battery life
 
-With the screen off the pager used about 65 mA before the power work and about **24 mA now** (screen on: about 108 mA). On the 1500 mAh cell that
-is roughly 2 to 2.5 days of listening with the screen off, against about 23 hours. One pager, read from the fuel gauge on battery, so treat it
-as an estimate; the GPS is the biggest remaining unknown (it works harder indoors).
+With the screen off the pager used about 65 mA before the power work (fuel gauge), about 23 hours on the 1500 mAh cell. Now, on a power analyser,
+it **sleeps at about 19.5 mA** with the radio receiving, plus the GPS searches. With the pager still and the GPS searching about 5% of the
+time, that is an estimated **21 mA on average, about 2.5 to 3 days**. This is an estimate: a full run down of the battery has not been timed.
+With the screen on it draws about 70 mA dimmed and 96 mA bright (read during start-up).
 
-What saves power, from most to least: let the screen time out (shorter is better), keep USB unplugged, lower the brightness, beacon less often,
-and use **Power off** (Backspace) when it will not be used for days. What was measured and why, including a leak that cost about 40 mA and how to
-avoid it in other firmware for this board, is in [docs/low-power.md](docs/low-power.md).
+Two options in the phone setup are **off by default and still being tested**, and have not been tested together:
+
+| Option | Measured | Still to check |
+|---|---|---|
+| Switch GPS power off between searches | sleep **11.9 mA** instead of 19.5 | long runs, moving, without motion wake |
+| Slower processor (40 MHz) while the screen is off | GPS searches about **39 mA** instead of 51.5 | GPS reliability over longer use |
+
+With the GPS option, the same pattern of searches would give an estimated 14 mA (about 3.8 to 4.5 days). In the one analyser run searches took
+about 20% of the time, which comes to about 20 mA; how long searches take depends on reception.
+
+To save power now: let the screen time out (shorter is better), keep USB unplugged, lower the brightness, beacon less often, and use
+**Power off** (Backspace) when it will not be used for days. What was measured and how, including leaks that cost about 40 mA and how to avoid
+them in other firmware for this board, is in [docs/low-power.md](docs/low-power.md).
 
 ## Hardware
 
