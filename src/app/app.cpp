@@ -1583,12 +1583,18 @@ static void pxRun() {
 #ifdef POWER_TEST
 #include "powertest.h"
 #endif
+#ifdef LEAK_TEST
+#include "leaktest.h"
+#endif
 
 void loop() {
   esp_task_wdt_reset(); pstage(5);
   rstHistAlive();
 #ifdef POWER_TEST
   powerTestTick();
+#endif
+#ifdef LEAK_TEST
+  leakTestTick();
 #endif
   plogRtc.autoOn = autoBeacon ? 1 : 0; if (millis() > 1800000UL) plogRtc.autoRestores = 0;
   if (root == "") { delay(1000); return; }
@@ -1679,6 +1685,9 @@ void loop() {
           }
 #ifdef POWER_TEST
           else if (cmd[1] == 'R') ptPrint();
+#endif
+#ifdef LEAK_TEST
+          else if (cmd[1] == 'R') ltPrint();
 #endif
           else if (cmd[1] == 'X') { if (radioOk) pxRun(); else Serial.println("PX: no radio"); }
           else if (cmd[1] == 'T') { cadForceTimeout = true; Serial.println("the next channel check will act stuck"); }
