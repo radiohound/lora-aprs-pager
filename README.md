@@ -10,10 +10,14 @@ APRS messages with acknowledgements, all on the pager's own screen, rotary knob 
 > for ways to reduce power ([notes](docs/low-power.md)).
 > **It transmits.** You need an amateur radio licence and your own call sign. The pager will not transmit until a call sign is saved.
 
+![The T-LoRa Pager showing the map, status icons and an unread message](docs/screenshots/pager-photo.jpg)
+
+*Illustration: a photo of the pager with a demo screen (simulated stations) and status icons placed into it, including the unread-message envelope.*
+
 ![Map and heard stations](docs/screenshots/demo-list-and-map.png)
 
 *The screenshots with stations and with the full list show **demo data**: simulated stations (`N0DEMO-1` to `-8`) around the summit of Mount Diablo, produced by the
-firmware's demo mode (`DEMO MODE` is shown on the screen, and nothing is transmitted while it is on). The other pictures are real.*
+firmware's demo mode (`DEMO MODE` is shown on the screen, and nothing is transmitted while it is on). The other screenshots are real.*
 
 ## What it does
 
