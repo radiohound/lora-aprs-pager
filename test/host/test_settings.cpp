@@ -57,6 +57,10 @@ int main() {
   { M m5 = good(); m5["gpsoff"] = "1"; PagerSettings u5; std::string e5; expect(parse(m5, u5, e5) && u5.gpsPowerOff, "GPS power off setting parsed");
     std::string j5 = settingsToJson(u5); expect(j5.find("\"gpsoff\":1}") != std::string::npos, "JSON carries it, and is not cut off");
     PagerSettings d5; expect(!d5.gpsPowerOff, "GPS power off is off by default"); }
+  { PagerSettings d6; expect(d6.moveMetres == 200, "moved distance defaults to 200 m");
+    PagerSettings a1; a1.moveMetres = 150; settingsUpgradeMove(a1, false); expect(a1.moveMetres == 200, "an old saved 150 m becomes 200");
+    PagerSettings a2; a2.moveMetres = 150; settingsUpgradeMove(a2, true); expect(a2.moveMetres == 150, "150 chosen since then is kept");
+    PagerSettings a3; a3.moveMetres = 300; settingsUpgradeMove(a3, false); expect(a3.moveMetres == 300, "another saved distance is kept"); }
   printf(fails ? "%d FAILED\n" : "all passed\n", fails);
   return fails != 0;
 }

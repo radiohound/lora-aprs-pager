@@ -32,7 +32,7 @@ firmware's demo mode (`DEMO MODE` is shown on the screen, and nothing is transmi
   its signal and when it was heard. It has no map position until the pager hears the digipeater's own position.
 - **Beacon.** Sends your position with your chosen symbol and comment. Listens first (channel activity detection) and skips the beacon if
   the channel is busy. Auto-beaconing is **off at power-on** unless you switch that on in setup; moving it beacons about once a minute
-  after 150 m, standing still every 10 minutes (all settable).
+  after 200 m, standing still every 10 minutes (all settable).
 - **Messaging** (design in [docs/messaging.md](docs/messaging.md)). Conversations per call sign with unread badges, threads, compose with
   quick replies on the knob, acks and retries (30 s, then doubling, six tries), one open message per addressee, delete with undo,
   ASCII emoticons drawn as pictures on the screen (the text on the air stays plain ASCII), RSSI and SNR on received messages.

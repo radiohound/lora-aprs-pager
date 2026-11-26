@@ -10,7 +10,7 @@ class BeaconScheduler {
 public:
   static constexpr uint32_t FIRST_DELAY_MS = 15000, MIN_GAP_MS = 30000, MANUAL_GAP_MS = 5000;
   uint32_t movingMs = 60000, stationaryMs = 600000;   // set from the settings
-  double moveM = 150.0;
+  double moveM = 200.0;
 
   void start(uint32_t now) { _armedAt = now; _sent = false; }
   void sent(uint32_t now, double lat, double lon) { _sent = true; _last = now; _lat = lat; _lon = lon; }
@@ -27,7 +27,7 @@ public:
   bool hasSent() const { return _sent; }
 private:
   uint32_t _armedAt = 0, _last = 0; bool _sent = false; double _lat = 0, _lon = 0;
-  double metres(double lat, double lon) const {       // flat-earth distance, fine for 150 m
+  double metres(double lat, double lon) const {       // flat-earth distance, fine for a few hundred metres
     double dy = (lat - _lat) * 111320.0, dx = (lon - _lon) * 111320.0 * cos(_lat * M_PI / 180.0);
     return sqrt(dx * dx + dy * dy);
   }

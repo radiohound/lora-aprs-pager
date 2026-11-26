@@ -16,7 +16,7 @@ struct PagerSettings {
   int txDbm = 20;
   int movingSec = 60;              // beacon at most this often while moving
   int stationaryMin = 10;          // beacon this often while standing still
-  int moveMetres = 150;            // how far counts as "moved"
+  int moveMetres = 200;            // how far counts as "moved" (GPS drift on a still pager has reached about 170 m)
   bool autoAtBoot = false;         // start auto-beaconing at power-on
   bool haptic = true;
   int brightness = 160;
@@ -91,6 +91,10 @@ inline bool settingsLaterDefault(const char *k, std::string &v) {
   for (const D &d : defs) if (!strcmp(k, d.k)) { v = d.v; return true; }
   return false;
 }
+
+// The "moved" distance used to default to 150 m, and a saved set of settings keeps its number. Once: a saved 150 becomes 200. `savedSince200` is
+// true when the settings were saved by a version with the new default, so a 150 chosen after that is kept. Other distances are never changed.
+inline void settingsUpgradeMove(PagerSettings &s, bool savedSince200) { if (!savedSince200 && s.moveMetres == 150) s.moveMetres = 200; }
 
 // Read all fields through get(name, value). Returns true and fills `out` only if EVERY field is valid; otherwise `err` says
 // which one is wrong and `out` is left untouched. Fields: call path table sym comment txdbm moving stationary movem auto haptic bright tz dst baticon dim off gpssl gpsmv gpsst gpsmo gpsbk rxd slow40 gpsoff

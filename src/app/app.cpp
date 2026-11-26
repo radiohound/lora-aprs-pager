@@ -866,7 +866,7 @@ static void saveSettings(const PagerSettings &x) {
   char t[2] = {x.table, 0}, y[2] = {x.sym, 0};
   p.putString("call", x.call); p.putString("path", x.path); p.putString("table", t); p.putString("sym", y); p.putString("comment", x.comment);
   p.putString("txdbm", String(x.txDbm)); p.putString("moving", String(x.movingSec)); p.putString("stationary", String(x.stationaryMin));
-  p.putString("movem", String(x.moveMetres)); p.putString("auto", x.autoAtBoot ? "1" : "0"); p.putString("haptic", x.haptic ? "1" : "0");
+  p.putString("movem", String(x.moveMetres)); p.putString("move200", "1"); p.putString("auto", x.autoAtBoot ? "1" : "0"); p.putString("haptic", x.haptic ? "1" : "0");
   p.putString("bright", String(x.brightness)); p.putString("tz", String(x.utcOffset)); p.putString("dst", x.usDst ? "1" : "0"); p.putString("baticon", x.batIcon ? "1" : "0"); p.putString("dim", String(x.dimSec)); p.putString("off", String(x.offSec));
   p.putString("gpssl", x.gpsSleep ? "1" : "0"); p.putString("gpsmv", String(x.gpsMoveSec)); p.putString("gpsst", String(x.gpsStillMin)); p.putString("gpsmo", x.gpsMotion ? "1" : "0"); p.putString("gpsbk", String(x.gpsBackstopMin)); p.putString("slow40", x.slow40 ? "1" : "0"); p.putString("gpsoff", x.gpsPowerOff ? "1" : "0"); p.putString("rxd", x.rxDuty ? "1" : "0"); p.end();
 }
@@ -876,6 +876,7 @@ static PagerSettings loadSettings() {
   bool ok = settingsParse([&](const char *k, std::string &v) {
     if (!p.isKey(k)) return settingsLaterDefault(k, v);              // saved by an older version: the default for settings added later, else the load fails
     v = p.getString(k, "").c_str(); return true; }, x, err);
+  if (ok) settingsUpgradeMove(x, p.isKey("move200"));
   p.end();
   return ok ? x : PagerSettings();            // nothing saved yet, or damaged: the defaults
 }
