@@ -14,8 +14,6 @@ APRS messages with acknowledgements, all on the pager's own screen, rotary knob 
 
 *Illustration: a photo of the pager with a demo screen (simulated stations) and status icons placed into it, including the unread-message envelope.*
 
-![Map and heard stations](docs/screenshots/demo-list-and-map.png)
-
 *The screenshots with stations and with the full list show **demo data**: simulated stations (`N0DEMO-1` to `-8`) around the summit of Mount Diablo, produced by the
 firmware's demo mode (`DEMO MODE` is shown on the screen, and nothing is transmitted while it is on). The other screenshots are real.*
 
