@@ -1565,9 +1565,16 @@ static void pxRun() {
   Serial.println("PX done");
 }
 
+#ifdef POWER_TEST
+#include "powertest.h"
+#endif
+
 void loop() {
   esp_task_wdt_reset(); pstage(5);
   rstHistAlive();
+#ifdef POWER_TEST
+  powerTestTick();
+#endif
   plogRtc.autoOn = autoBeacon ? 1 : 0; if (millis() > 1800000UL) plogRtc.autoRestores = 0;
   if (root == "") { delay(1000); return; }
   if (pwrSleep && screenState == 2 && !setupMode && !demoMode && radioOk && millis() - lastGpsByte > 400 && (gpsSleeping || !S.gpsSleep || !pwrGps)) lightSleepOnce();
@@ -1651,6 +1658,9 @@ void loop() {
             Serial.printf("auto beacon %s, restored %d time(s) since the last 30 min stable run\n", autoBeacon ? "on" : "off", plogRtc.autoRestores); }
             for (int i = 0; i < n; i++) { PEv &e = plogBuf[(first + i) % 96]; Serial.printf("  %9lu ms  %c  %d %d\n", (unsigned long)e.ms, e.tag, e.a, e.b); }
           }
+#ifdef POWER_TEST
+          else if (cmd[1] == 'R') ptPrint();
+#endif
           else if (cmd[1] == 'X') { if (radioOk) pxRun(); else Serial.println("PX: no radio"); }
           else if (cmd[1] == 'T') { cadForceTimeout = true; Serial.println("the next channel check will act stuck"); }
           else if (cmd[1] == 'L') { pwrSleep = cmd[2] == '1'; }
