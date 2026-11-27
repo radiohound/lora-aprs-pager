@@ -7,6 +7,7 @@
 #include "pins.h"
 #include "xl9555.h"
 #include "buzzquiet.h"
+#include "hapticpower.h"
 
 enum HapticKind : uint8_t { H_TICK, H_CLICK, H_MESSAGE, H_ACK, H_ERROR, H_KINDS };
 
@@ -21,8 +22,8 @@ public:
     Wire.beginTransmission(ADDR_DRV2605);
     if (Wire.endTransmission() != 0) { xp.output(XP_DRV_EN, LOW); return false; }
     _xp = &xp;
-    wr(0x01, 0x00);        // mode: internal trigger, out of standby
-    wr(0x03, 0x01);        // effect library 1
+    setup();
+    _pw.wake(millis());    // idle() disables it again shortly
     _ok = true;
     return true;
   }
@@ -41,6 +42,7 @@ public:
       if (now - _lastTick < TICK_MIN_MS) return;
       _lastTick = now;
     }
+    if (_pw.wake(now)) { _xp->output(XP_DRV_EN, HIGH); delay(2); setup(); }     // it was disabled to save power
     _quiet.buzzed(now);
     switch (k) {
       case H_TICK:    seq(EFFECT_TICK, 0, 0);                        break;
@@ -52,8 +54,11 @@ public:
     }
   }
 
-  // Switch the motor driver off (saves power); begin() turns it on again.
-  void off() { if (_xp) _xp->output(XP_DRV_EN, LOW); _ok = false; }
+  // Call from the main loop: disables the driver once the last buzz is over (hapticpower.h).
+  void idle() { if (_ok && _pw.idle(millis())) _xp->output(XP_DRV_EN, LOW); }
+
+  // Switch the motor driver off for good (power off); begin() turns it on again.
+  void off() { if (_xp) _xp->output(XP_DRV_EN, LOW); _pw.on = false; _ok = false; }
 
 private:
   static constexpr uint32_t TICK_MIN_MS = 40;
@@ -65,6 +70,12 @@ private:
   bool _ok = false;
   uint32_t _lastTick = 0;
   BuzzQuiet _quiet;
+  HapticPower _pw;
+
+  void setup() {
+    wr(0x01, 0x00);        // mode: internal trigger, out of standby
+    wr(0x03, 0x01);        // effect library 1
+  }
 
   void wr(uint8_t reg, uint8_t v) {
     Wire.beginTransmission(ADDR_DRV2605); Wire.write(reg); Wire.write(v); Wire.endTransmission();

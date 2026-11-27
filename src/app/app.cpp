@@ -1781,7 +1781,7 @@ void loop() {
   if (setupMode) { setupTick(); return; }   // while the phone setup screen is open, nothing else runs (receiving still does)
 
   pstage(7);
-  screenTick(); gpsPosSave(); gpsWakeCheck(); motionDuty(); gpsDuty(); chaseTick();
+  screenTick(); gpsPosSave(); gpsWakeCheck(); motionDuty(); gpsDuty(); chaseTick(); haptic.idle();
   { static uint32_t clkTickAt = 0; static int lastMin = -1, lastPct = -2; static bool lastChg = false;
     if (millis() - clkTickAt > 1000) {
       clkTickAt = millis(); clockTick();

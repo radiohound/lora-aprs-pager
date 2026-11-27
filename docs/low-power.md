@@ -91,7 +91,7 @@ The order that mattered, biggest first:
    time, no other saving will show.
 
 Small or no gain here (power analyser): the amplifier control, keyboard supply and light, and backlight pin (within 0.11 mA). **Keep NFC off**
-(powering it added 20 mA). Disabling the haptic driver saved about 0.5 mA; the firmware does not do that yet.
+(powering it added 20 mA). Disabling the haptic driver saved about 0.5 mA; the firmware now disables it between buzzes.
 
 **Processor speed** also counts while it is awake: 40 MHz instead of 80 saved about 9.5 mA (an option, off by default).
 
@@ -217,6 +217,8 @@ Measured with the fuel gauge in the earlier work, no change beyond noise (the la
 * **The pager's own buzz woke the GPS.** In a 22 hour run with the pager still, 34 of 35 motion wakes in the saved log came within seconds
   after a beacon (nearly all about 0.23 s after it): the pager buzzes after a beacon, and the motion sensor reported steps. Each caused extra
   GPS searches. Motion reports are now ignored for 3 s from the start of any buzz (`src/buzzquiet.h`). Not yet confirmed on the pager.
+* **Haptic driver** (not part of the GPS, noted here with the other change): it is now enabled only around a buzz and disabled 2 s after the
+  latest one (`src/hapticpower.h`). Left enabled it cost 0.47 mA in the leak test. The new behaviour is not yet measured or tried on the pager.
 * **Position and time hint at boot** (the receiver accepts both: checked with the acknowledgments of `CFG-NAVSPG-ACKAIDING`, which a
   development check in the firmware turns on, `GPS_HINT_CHECK`; how much they speed up a fix has not been measured): the last good fix (saved to flash after a move of 3 km or more, at most every 10 minutes) and the
   RTC time are sent as `UBX-MGA-INI-POS_LLH` and `UBX-MGA-INI-TIME_UTC`. They shorten the first fix after a cold start. The M10's backup
