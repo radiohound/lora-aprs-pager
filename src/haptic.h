@@ -6,6 +6,7 @@
 #include <Wire.h>
 #include "pins.h"
 #include "xl9555.h"
+#include "buzzquiet.h"
 
 enum HapticKind : uint8_t { H_TICK, H_CLICK, H_MESSAGE, H_ACK, H_ERROR, H_KINDS };
 
@@ -28,6 +29,9 @@ public:
 
   bool ok() const { return _ok; }
 
+  // True for a few seconds after a buzz: the motion sensor feels it (buzzquiet.h).
+  bool shaking(uint32_t now) { return _quiet.quiet(now); }
+
   // Play one pattern. A tick is rate limited so a fast knob spin does not buzz constantly,
   // and nothing plays while the radio is sending (the motor draws a current burst).
   void play(HapticKind k, bool radioBusy = false) {
@@ -37,6 +41,7 @@ public:
       if (now - _lastTick < TICK_MIN_MS) return;
       _lastTick = now;
     }
+    _quiet.buzzed(now);
     switch (k) {
       case H_TICK:    seq(EFFECT_TICK, 0, 0);                        break;
       case H_CLICK:   seq(EFFECT_CLICK, 0, 0);                       break;
@@ -59,6 +64,7 @@ private:
   XL9555 *_xp = nullptr;
   bool _ok = false;
   uint32_t _lastTick = 0;
+  BuzzQuiet _quiet;
 
   void wr(uint8_t reg, uint8_t v) {
     Wire.beginTransmission(ADDR_DRV2605); Wire.write(reg); Wire.write(v); Wire.endTransmission();

@@ -214,6 +214,9 @@ Measured with the fuel gauge in the earlier work, no change beyond noise (the la
   were no restarts; searches there lasted 30 to 67 s and whether each got a fix is not known (the log was lost with the power). Still to test:
   long runs, moving, and without motion wake (after a power-off the position moved up to 92 m, which the 150 m filter for a quiet motion sensor
   ignored; without the sensor the limit is 40 m).
+* **The pager's own buzz woke the GPS.** In a 22 hour run with the pager still, 34 of 35 motion wakes in the saved log came within seconds
+  after a beacon (nearly all about 0.23 s after it): the pager buzzes after a beacon, and the motion sensor reported steps. Each caused extra
+  GPS searches. Motion reports are now ignored for 3 s from the start of any buzz (`src/buzzquiet.h`). Not yet confirmed on the pager.
 * **Position and time hint at boot** (the receiver accepts both: checked with the acknowledgments of `CFG-NAVSPG-ACKAIDING`, which a
   development check in the firmware turns on, `GPS_HINT_CHECK`; how much they speed up a fix has not been measured): the last good fix (saved to flash after a move of 3 km or more, at most every 10 minutes) and the
   RTC time are sent as `UBX-MGA-INI-POS_LLH` and `UBX-MGA-INI-TIME_UTC`. They shorten the first fix after a cold start. The M10's backup

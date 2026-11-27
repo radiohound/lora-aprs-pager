@@ -1116,7 +1116,7 @@ static void gpsWakeCheck() {                                // every pass, scree
 }
 // Motion wake (setting "gpsmo"). While the sensor is being proven, the 5 minute check while still stays as it is, so a movement the sensor
 // misses costs no more than before; the long backstop setting is not used yet.
-static uint32_t motionGpsWakes = 0, motionPinWakes = 0;
+static uint32_t motionGpsWakes = 0, motionPinWakes = 0, motionBuzzIgnored = 0;
 static uint32_t motionWakesTotal() { return motionGpsWakes; }
 static uint32_t motionPinWakesTotal() { return motionPinWakes; }
 static void motionDuty() {                                  // every pass
@@ -1127,6 +1127,7 @@ static void motionDuty() {                                  // every pass
   motionPoll();
   if (!motionNew) return;
   uint8_t kinds = motionNew; motionNew = 0;
+  if (haptic.shaking(millis())) { motionBuzzIgnored++; return; }   // our own buzz, not movement (buzzquiet.h)
   bool wake = gpsAdaptiveOnMotion(gpsAd, millis());              // once per report: it also puts the short interval back
   if (wake && aGps && gpsSleeping) {                             // only cuts the long sleep short, at most once a minute
     motionGpsWakes++; blogBeacon('M', kinds);
@@ -1697,6 +1698,7 @@ void loop() {
             for (int k = 0; k < MOT_KINDS; k++) Serial.printf(" %s %lu%s,", MOT_NAME[k], (unsigned long)motionCount[k], motionAvail[k] ? "" : " (n/a)");
             Serial.println();
             rstHistPrint();
+            Serial.printf("motion reports ignored because of our own buzz: %u\n", (unsigned)motionBuzzIgnored);
             Serial.printf("GPS power off between searches: %s\n", S.gpsPowerOff ? "on" : "off");
             Serial.printf("slow processor setting %s; GPS lines at 80+ MHz: %lu good, %lu bad; below 80 MHz: %lu good, %lu bad\n", S.slow40 ? "on" : "off",
                           (unsigned long)nmeaOk[0], (unsigned long)nmeaBad[0], (unsigned long)nmeaOk[1], (unsigned long)nmeaBad[1]);
