@@ -134,21 +134,29 @@ This firmware **transmits** on 433.775 MHz (the LoRa APRS frequency) at up to 22
 
 ### Battery life
 
-With the screen off the pager used about 65 mA before the power work (fuel gauge), about 23 hours on the 1500 mAh cell. Now, on a power analyser,
-it **sleeps at about 19.5 mA** with the radio receiving, plus the GPS searches. With the pager still and the GPS searching about 5% of the
-time and a beacon every 10 minutes, that is an estimated **22 mA on average, about 2.4 to 2.9 days**. This is an estimate: a full run down of the battery has not been timed.
-With the screen on it draws about 70 mA dimmed and 96 mA bright (read during start-up).
+**Estimates** for the 1500 mAh cell with the pager **still, screen off, listening, and a beacon every 10 minutes** (SF12). The currents were
+measured on one pager with a power analyser; the days are calculated from them. A full run down of the battery has not been timed.
 
-Two options in the phone setup are **off by default and still being tested**:
+| Settings | Sleep current (measured) | Average, GPS searching 6% of the time | Days | Average, searching 20% | Days |
+|---|---|---|---|---|---|
+| Before the power work (fuel gauge) | | about 65 mA | about 1 | | |
+| Normal (the default) | 19.5 mA | about 22 mA | **2.4 to 2.9** | about 26 mA | 2.0 to 2.4 |
+| Both power options on | **10.9 mA** | about 13 mA | **4 to 4.7** | about 17 mA | 3.1 to 3.7 |
 
-| Option | Measured | Still to check |
+"Days" runs from 85% of the rated capacity to all of it. **How often the GPS searches, and for how long, depends on reception.** About 6% is what
+a 13 hour battery run by a window showed in its last 8 hours; 20% is about what the analyser runs showed.
+
+The two options are in the phone setup, **off by default and still being tested**:
+
+| Option | What was measured | Still to check |
 |---|---|---|
-| Switch GPS power off between searches | sleep **11.9 mA** instead of 19.5 | moving, without motion wake |
-| Slower processor (40 MHz) while the screen is off | GPS searches about **38 mA** instead of 51 | moving, more places and reception |
+| Switch GPS power off between searches | sleep 11.9 mA instead of 19.5 | moving, without motion wake |
+| Slower processor (40 MHz) while the screen is off | GPS searches about 38 mA instead of 51 | moving, more places and reception |
 
-Both together (with the haptic driver now off between buzzes) slept at **10.9 mA** on the analyser. In one 13 hour battery run, still by a window,
-there were no restarts, 95% of GPS searches got a fix and GPS searched about 6% of the time in the last 8 hours: an **estimate of about 13 mA, 4 to
-4.7 days**. How long searches take depends on reception; with 20% of the time searching it would be about 17 mA (3 to 3.7 days).
+The 10.9 mA reading has both on, and the haptic driver off between buzzes (the firmware now always does that; it was not part of the 19.5 mA
+reading). In the 13 hour battery run with both on there were no restarts or crashes and 95% of GPS searches got a fix. Moving, using the screen,
+messages, weak reception, cold and battery age all shorten these times. With the screen on the pager draws about 70 mA dimmed and 96 mA bright
+(read during start-up).
 
 To save power now: let the screen time out (shorter is better), keep USB unplugged, lower the brightness, beacon less often, and use
 **Power off** (Backspace) when it will not be used for days. What was measured and how, including leaks that cost about 40 mA and how to avoid
