@@ -6,7 +6,7 @@ APRS messages with acknowledgements, all on the pager's own screen, rotary knob 
 
 > **Status: working, and in active development.** Offline maps, heard stations, beaconing, two-way messaging, following your own position and
 > low-power operation with the screen off, and more, have been tested on a LilyGO T-LoRa Pager. So far that is one unit (the SX1262
-> version). Still being tested: motion wake while driving, following a station that is moving, and long runs on battery. We are still looking
+> version). Still being tested: motion wake while driving, following a station that is moving, and battery runs longer than a day. We are still looking
 > for ways to reduce power ([notes](docs/low-power.md)).
 > **It transmits.** You need an amateur radio licence and your own call sign. The pager will not transmit until a call sign is saved.
 
@@ -139,15 +139,16 @@ it **sleeps at about 19.5 mA** with the radio receiving, plus the GPS searches. 
 time and a beacon every 10 minutes, that is an estimated **22 mA on average, about 2.4 to 2.9 days**. This is an estimate: a full run down of the battery has not been timed.
 With the screen on it draws about 70 mA dimmed and 96 mA bright (read during start-up).
 
-Two options in the phone setup are **off by default and still being tested**, and have not been tested together:
+Two options in the phone setup are **off by default and still being tested**:
 
 | Option | Measured | Still to check |
 |---|---|---|
-| Switch GPS power off between searches | sleep **11.9 mA** instead of 19.5 | long runs, moving, without motion wake |
-| Slower processor (40 MHz) while the screen is off | GPS searches about **39 mA** instead of 51.5 | GPS reliability over longer use |
+| Switch GPS power off between searches | sleep **11.9 mA** instead of 19.5 | moving, without motion wake |
+| Slower processor (40 MHz) while the screen is off | GPS searches about **38 mA** instead of 51 | moving, more places and reception |
 
-With the GPS option, the same pattern of searches would give an estimated 14.5 mA (about 3.7 to 4.3 days). In the one analyser run searches took
-about 20% of the time, which comes to about 20.5 mA; how long searches take depends on reception.
+Both together (with the haptic driver now off between buzzes) slept at **10.9 mA** on the analyser. In one 13 hour battery run, still by a window,
+there were no restarts, 95% of GPS searches got a fix and GPS searched about 6% of the time in the last 8 hours: an **estimate of about 13 mA, 4 to
+4.7 days**. How long searches take depends on reception; with 20% of the time searching it would be about 17 mA (3 to 3.7 days).
 
 To save power now: let the screen time out (shorter is better), keep USB unplugged, lower the brightness, beacon less often, and use
 **Power off** (Backspace) when it will not be used for days. What was measured and how, including leaks that cost about 40 mA and how to avoid

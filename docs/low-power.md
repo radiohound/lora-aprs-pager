@@ -216,9 +216,9 @@ Measured with the fuel gauge in the earlier work, no change beyond noise (the la
   ignored; without the sensor the limit is 40 m).
 * **The pager's own buzz woke the GPS.** In a 22 hour run with the pager still, 34 of 35 motion wakes in the saved log came within seconds
   after a beacon (nearly all about 0.23 s after it): the pager buzzes after a beacon, and the motion sensor reported steps. Each caused extra
-  GPS searches. Motion reports are now ignored for 3 s from the start of any buzz (`src/buzzquiet.h`). Not yet confirmed on the pager.
+  GPS searches. Motion reports are now ignored for 3 s from the start of any buzz (`src/buzzquiet.h`). Confirmed in a 13 hour battery run: 52 reports ignored, and the only 2 motion wakes were from picking the pager up.
 * **Haptic driver** (not part of the GPS, noted here with the other change): it is now enabled only around a buzz and disabled 2 s after the
-  latest one (`src/hapticpower.h`). Left enabled it cost 0.47 mA in the leak test. The new behaviour is not yet measured or tried on the pager.
+  latest one (`src/hapticpower.h`). Left enabled it cost 0.47 mA in the leak test. With the change, buzzes were felt from the disabled state (beacons, a USB test and five single knob clicks). In the analyser run below, sleep read 10.9 mA, about 0.9 mA under the run before; more than the 0.47 expected, and the rest is not explained.
 * **Position and time hint at boot** (the receiver accepts both: checked with the acknowledgments of `CFG-NAVSPG-ACKAIDING`, which a
   development check in the firmware turns on, `GPS_HINT_CHECK`; how much they speed up a fix has not been measured): the last good fix (saved to flash after a move of 3 km or more, at most every 10 minutes) and the
   RTC time are sent as `UBX-MGA-INI-POS_LLH` and `UBX-MGA-INI-TIME_UTC`. They shorten the first fix after a cold start. The M10's backup
@@ -308,7 +308,7 @@ From their `variants/esp32s3/tlora-pager` and `src/sleep.cpp` (read 2026-11-23, 
 * **Real listening configuration.** The 6 mA figure has the GPS off and the radio in standby. Receiving adds about 6 mA, and the GPS
   duty cycle adds more. The measured result of the real build is below.
 * **About 5.5 mA remains with the GPS supply off and the radio asleep** and has not been traced (see the leak tests below).
-* **40 MHz and the GPS supply option have not been tested together**, and neither yet over a long run.
+* **40 MHz with the GPS supply option** has had one 13 hour battery run with the pager still (see "Power analyser measurements"); neither has been tested while moving.
 * **Radio, GPS and beacons on battery** have been tested on one pager in runs of up to about an hour, including a 40 minute drive (27
   beacons sent, none failed; the 26 in the compared period were all heard). Longer runs are still to be done.
 * **Restarts in light sleep.** Two causes were found and fixed: interrupt-watchdog resets from a storm of level interrupts on the wake pins
@@ -402,6 +402,14 @@ not a useful floor. The keyboard was not connected.
 **GPS supply option on battery:** sleep **11.9 mA** (median; 11.76 between wakes), against 19.46 mA before. From the first sleep to the end
 the average was 20.3 mA with 20.5% of the time in searches; the normal-settings recording above was 26.0 mA with 19.2%. Different recordings,
 so treat the comparison as approximate.
+
+**40 MHz and GPS supply option together, with the haptic change (2026-11-27).** Analyser, 28 minutes: sleep **10.9 mA**, GPS searching **37.8 mA**,
+17.8 mA on average from the first sleep, with 24% of the time searching. At the end three searches ran to their 30, 90 and 180 s limits (so
+very likely three misses) and the beacon due then was not sent; the logs were lost with the power. On battery, 13 hours, still, by a window:
+no restarts or crashes, 78 beacons with no radio failures (5 held a short while for a fix), GPS searches 149 with a fix and 8 without (95%),
+no two misses in a row in the 96 searches the log keeps (the last 8 hours: median 17 s, longest 37 s, searching 5.9% of the time). At 40 MHz
+0.32% of GPS lines were bad after the first 93 minutes (0.8% in those), about what 80 MHz gave. From these two runs together, an estimate of
+about **13 mA** on average with the pager still (about 4.7 days from 1500 mAh, 4 days from 85% of it); the battery was not run down.
 
 **Earlier fuel gauge comparison** (2026-11-25, 20 minute runs, pager still): 21 mA with the SD card switched off and 21 mA with it left
 powered, searching 6% and 4% of the time. That fits the analyser's 0.4 mA. How the 2026-11-24 build read as low as 14 mA has not been
