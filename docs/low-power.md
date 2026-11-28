@@ -6,9 +6,10 @@ Everything here was measured on one pager (SX1262, 433 MHz, 1500 mAh cell) with 
 
 ## The short version
 
-**Now (2026-11-26), measured with a power analyser:** with the screen off and the radio receiving, the pager sleeps at about **19.5 mA** with the
+**Now, measured with a power analyser (2026-11-26 and 27):** with the screen off and the radio receiving, the pager sleeps at about **19.5 mA** with the
 normal settings, and about **11.9 mA** with the GPS supply switched off between searches (a new option, off by default, still being tested).
-GPS searches add to this. **Before any power-saving changes** it used about **65 mA** (fuel gauge), roughly 23 hours on the 1500 mAh cell.
+With that option, the 40 MHz option and the haptic driver disabled between buzzes, it sleeps at about **10.9 mA** (estimated average
+about 13 mA with the pager still by a window). GPS searches add to this. **Before any power-saving changes** it used about **65 mA** (fuel gauge), roughly 23 hours on the 1500 mAh cell.
 **We are still looking into ways to reduce power.** Estimated battery life is below; the measurements are in
 "Power analyser measurements" near the end.
 
@@ -41,10 +42,13 @@ the power analyser runs.
 | Still, screen off, normal settings, searching 5% | 22 mA | about 2.9 | about 2.4 |
 | Still, screen off, GPS supply off, searching 5% | 14.5 mA | about 4.3 | about 3.7 |
 | Still, screen off, GPS supply off, searching 20% (as in the analyser run) | 20.5 mA | about 3.0 | about 2.6 |
+| Still, screen off, GPS supply off + 40 MHz + haptic change, searching 6% (as in the 13 hour battery run) | 13 mA | about 4.7 | about 4.0 |
+| Still, screen off, GPS supply off + 40 MHz + haptic change, searching 20% | 17 mA | about 3.7 | about 3.1 |
 | Moving 8 hours a day, screen off, normal settings | 28 mA in those hours (estimate) | about 2.7 | about 2.3 |
 | Still, screen on 8 hours a day, normal settings | 71 mA dimmed to 96 mA bright | about 1.4 to 1.7 | about 1.2 to 1.4 |
 
-The "still" rows include a beacon every 10 minutes at SF12 (about 2.6 s of transmitting, about 0.5 mA on average). The GPS supply option has not been tested while moving, so there is no estimate for it. For comparison, 65 mA all day was about 23 hours.
+The "still" rows include a beacon every 10 minutes at SF12 (about 2.6 s of transmitting, about 0.5 mA on average). Neither option has been tested while moving, so there is no moving estimate for them. The first three rows were worked out before the haptic
+change. The 13 hour battery run did not measure current: its rows combine how much it searched with the analyser's currents. For comparison, 65 mA all day was about 23 hours.
 The "moving" figure is for driving with a beacon about every 68 s: about 19 mA outside searches, about 5 mA for searches (13% of the time in a
 drive log) and about 5 mA for transmitting. The screen-on figures were read during start-up, depend on the brightness, and leave out beacons.
 Cold, battery age, weak GPS reception, messages and busy use all change these figures.
